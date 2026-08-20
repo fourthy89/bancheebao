@@ -3,6 +3,7 @@ import { supabase } from "./supabaseClient";
 
 const EXPENSE_CATS = ["อาหาร", "เดินทาง", "ที่พัก", "ช้อปปิ้ง", "บิล", "บันเทิง", "สุขภาพ", "อื่นๆ"];
 const INCOME_CATS = ["เงินเดือน", "โบนัส", "ของขวัญ", "ฟรีแลนซ์", "อื่นๆ"];
+const ADMIN_UID = "f8488495-4086-45e6-a797-ee9b965006b9";
 
 function fmt(n) {
   return new Intl.NumberFormat("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
@@ -39,6 +40,31 @@ export default function ExpenseTracker({ session, onLogout }) {
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  const isAdmin = session?.user?.id === ADMIN_UID;
+  const [viewMode, setViewMode] = useState("user"); // "user" | "admin"
+  const [adminEntries, setAdminEntries] = useState([]);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminError, setAdminError] = useState("");
+
+  async function loadAdminEntries() {
+    setAdminLoading(true);
+    setAdminError("");
+    const { data, error: adminFetchError } = await supabase
+      .from("entries")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (adminFetchError) {
+      setAdminError("โหลดข้อมูลแอดมินไม่สำเร็จ: " + adminFetchError.message);
+    } else {
+      setAdminEntries(data || []);
+    }
+    setAdminLoading(false);
+  }
+
+  function openAdminView() {
+    setViewMode("admin");
+    loadAdminEntries();
+  }
 
   function isAuthError(err) {
     if (!err) return false;
@@ -225,6 +251,15 @@ export default function ExpenseTracker({ session, onLogout }) {
       <div className="et-wrap">
         {session && (
           <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 12, marginBottom: 8, fontSize: 13 }}>
+            {isAdmin && (
+              <button
+                className="et-btn"
+                onClick={() => (viewMode === "admin" ? setViewMode("user") : openAdminView())}
+                style={{ border: "1px solid #9c7a34", background: viewMode === "admin" ? "#9c7a34" : "#fff", color: viewMode === "admin" ? "#fff" : "#9c7a34", borderRadius: 6, padding: "5px 12px", fontSize: 13, fontWeight: 700 }}
+              >
+                {viewMode === "admin" ? "กลับหน้าหลัก" : "มุมมองแอดมิน"}
+              </button>
+            )}
             <span style={{ color: "#5a5240" }}>{session.user?.email}</span>
             <button
               className="et-btn"
@@ -237,9 +272,52 @@ export default function ExpenseTracker({ session, onLogout }) {
         )}
         <div style={{ textAlign: "center", marginBottom: 20 }}>
           <div style={{ fontSize: 12, letterSpacing: 3, color: gold, marginBottom: 4 }}>BANCHEEBAO · สมุดบัญชี</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>บัญชีรายรับรายจ่าย</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{viewMode === "admin" ? "มุมมองแอดมิน · ทุกรายการ" : "บัญชีรายรับรายจ่าย"}</div>
         </div>
 
+        {viewMode === "admin" ? (
+          <div>
+            {adminError && (
+              <div style={{ background: "#fdecea", border: "1px solid #e19a92", color: "#b0413e", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13 }}>
+                {adminError}
+              </div>
+            )}
+            {adminLoading && (
+              <div style={{ textAlign: "center", padding: 24, color: "#9a8f6f", fontSize: 14 }}>กำลังโหลดข้อมูลทุกบัญชี...</div>
+            )}
+            {!adminLoading && !adminError && adminEntries.length === 0 && (
+              <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, padding: 24, textAlign: "center", color: "#9a8f6f", fontSize: 14 }}>
+                ยังไม่มีรายการในระบบ
+              </div>
+            )}
+            {!adminLoading && adminEntries.length > 0 && (
+              <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, overflow: "hidden" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "110px 1fr 90px 110px 1fr", gap: 8, padding: "10px 14px", background: paper, fontSize: 12, fontWeight: 700, color: "#7a7259" }}>
+                  <div>วันที่</div>
+                  <div>หมวดหมู่ / โน้ต</div>
+                  <div>ประเภท</div>
+                  <div>จำนวนเงิน</div>
+                  <div>user_id</div>
+                </div>
+                {adminEntries.map((e, i) => (
+                  <div key={e.id} style={{ display: "grid", gridTemplateColumns: "110px 1fr 90px 110px 1fr", gap: 8, padding: "10px 14px", borderTop: i === 0 ? "none" : "1px dashed #e2d9c3", fontSize: 13, alignItems: "center" }}>
+                    <div>{e.date}</div>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{e.category}</div>
+                      {e.note && <div style={{ fontSize: 12, color: "#9a8f6f" }}>{e.note}</div>}
+                    </div>
+                    <div style={{ color: e.type === "income" ? "#2f6e51" : "#b0413e" }}>{e.type === "income" ? "รายรับ" : "รายจ่าย"}</div>
+                    <div style={{ fontWeight: 700, color: e.type === "income" ? "#2f6e51" : "#b0413e" }}>
+                      {e.type === "income" ? "+" : "-"}{fmt(e.amount)}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#9a8f6f", wordBreak: "break-all" }}>{e.user_id}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+        <>
         {networkError && (
           <div style={{ background: "#fdecea", border: "1px solid #e19a92", color: "#b0413e", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13 }}>
             {networkError}
@@ -376,6 +454,8 @@ export default function ExpenseTracker({ session, onLogout }) {
         <div style={{ textAlign: "center", fontSize: 11, color: "#b0a688", marginTop: 16 }}>
           ข้อมูลถูกบันทึกไว้ในระบบฐานข้อมูลของคุณโดยอัตโนมัติ
         </div>
+        </>
+        )}
       </div>
 
       {pendingEntry && (
