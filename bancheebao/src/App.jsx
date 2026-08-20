@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "./supabaseClient";
 
 const EXPENSE_CATS = ["อาหาร", "เดินทาง", "ที่พัก", "ช้อปปิ้ง", "บิล", "บันเทิง", "สุขภาพ", "อื่นๆ"];
@@ -10,6 +10,13 @@ function fmt(n) {
 }
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
+}
+function fmtDateTime(isoStr) {
+  if (!isoStr) return "";
+  const d = new Date(isoStr);
+  const datePart = d.toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" });
+  const timePart = d.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
+  return `${datePart} · ${timePart} น.`;
 }
 function groupLabel(dateStr, mode) {
   const d = new Date(dateStr + "T00:00:00");
@@ -23,36 +30,50 @@ function groupKey(dateStr, mode) {
   return dateStr.slice(0, 4);
 }
 
+const UI_STATE_KEY = "bancheebao:ui-state";
+function loadUiState() {
+  try {
+    const raw = localStorage.getItem(UI_STATE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    return {};
+  }
+}
+function saveUiState(partial) {
+  try {
+    const current = loadUiState();
+    localStorage.setItem(UI_STATE_KEY, JSON.stringify({ ...current, ...partial }));
+  } catch (e) {}
+}
+
 export default function ExpenseTracker({ session, onLogout }) {
   const [entries, setEntries] = useState([]);
   const [loaded, setLoaded] = useState(false);
-  const [type, setType] = useState("expense");
+  const [type, setType] = useState(() => loadUiState().type || "expense");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState(EXPENSE_CATS[0]);
   const [note, setNote] = useState("");
   const [date, setDate] = useState(todayStr());
-  const [filter, setFilter] = useState("all");
-  const [groupMode, setGroupMode] = useState("day");
-  const [selectedPeriod, setSelectedPeriod] = useState("all");
-  const [catView, setCatView] = useState("expense");
+  const [filter, setFilter] = useState(() => loadUiState().filter || "all");
+  const [groupMode, setGroupMode] = useState(() => loadUiState().groupMode || "day");
+  const [selectedPeriod, setSelectedPeriod] = useState(() => loadUiState().selectedPeriod || "all");
+  const [catView, setCatView] = useState(() => loadUiState().catView || "expense");
   const [error, setError] = useState("");
   const [networkError, setNetworkError] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const isAdmin = session?.user?.id === ADMIN_UID;
-  const [viewMode, setViewMode] = useState("user"); // "user" | "admin"
+  const [viewMode, setViewMode] = useState(() => (isAdmin && loadUiState().viewMode === "admin" ? "admin" : "user"));
   const [adminEntries, setAdminEntries] = useState([]);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminError, setAdminError] = useState("");
+  const skipPeriodReset = useRef(true);
 
   async function loadAdminEntries() {
     setAdminLoading(true);
     setAdminError("");
-    const { data, error: adminFetchError } = await supabase
-      .from("entries")
-      .select("*")
-      .order("created_at", { ascending: false });
+    const { data, error: adminFetchError } = await supabase.rpc("get_admin_entries");
     if (adminFetchError) {
       setAdminError("โหลดข้อมูลแอดมินไม่สำเร็จ: " + adminFetchError.message);
     } else {
@@ -100,8 +121,23 @@ export default function ExpenseTracker({ session, onLogout }) {
   }, [type]);
 
   useEffect(() => {
+    if (skipPeriodReset.current) {
+      skipPeriodReset.current = false;
+      return;
+    }
     setSelectedPeriod("all");
   }, [groupMode]);
+
+  useEffect(() => {
+    saveUiState({ type, filter, groupMode, selectedPeriod, catView, viewMode: isAdmin ? viewMode : "user" });
+  }, [type, filter, groupMode, selectedPeriod, catView, viewMode, isAdmin]);
+
+  useEffect(() => {
+    if (isAdmin && viewMode === "admin") {
+      loadAdminEntries();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const totals = useMemo(() => {
     let income = 0, expense = 0;
@@ -141,6 +177,18 @@ export default function ExpenseTracker({ session, onLogout }) {
     () => entries.find((e) => e.id === pendingDeleteId) || null,
     [entries, pendingDeleteId]
   );
+
+  const adminGrouped = useMemo(() => {
+    const map = new Map();
+    for (const e of adminEntries) {
+      const key = e.email || e.user_id;
+      if (!map.has(key)) map.set(key, { email: key, items: [], expense: 0, income: 0 });
+      const g = map.get(key);
+      g.items.push(e);
+      if (e.type === "income") g.income += e.amount; else g.expense += e.amount;
+    }
+    return Array.from(map.values()).sort((a, b) => a.email.localeCompare(b.email));
+  }, [adminEntries]);
 
   const catSummary = useMemo(() => {
     const map = new Map();
@@ -290,31 +338,30 @@ export default function ExpenseTracker({ session, onLogout }) {
                 ยังไม่มีรายการในระบบ
               </div>
             )}
-            {!adminLoading && adminEntries.length > 0 && (
-              <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, overflow: "hidden" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "110px 1fr 90px 110px 1fr", gap: 8, padding: "10px 14px", background: paper, fontSize: 12, fontWeight: 700, color: "#7a7259" }}>
-                  <div>วันที่</div>
-                  <div>หมวดหมู่ / โน้ต</div>
-                  <div>ประเภท</div>
-                  <div>จำนวนเงิน</div>
-                  <div>user_id</div>
+            {!adminLoading && adminEntries.length > 0 && adminGrouped.map((g) => (
+              <div key={g.email} style={{ marginBottom: 20 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 4px", marginBottom: 6 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: inkColor }}>📧 {g.email}</span>
+                  <span style={{ fontSize: 12, color: "#7a7259" }}>
+                    <span style={{ color: "#2f6e51" }}>+{fmt(g.income)}</span>{"  "}
+                    <span style={{ color: "#b0413e" }}>-{fmt(g.expense)}</span>
+                  </span>
                 </div>
-                {adminEntries.map((e, i) => (
-                  <div key={e.id} style={{ display: "grid", gridTemplateColumns: "110px 1fr 90px 110px 1fr", gap: 8, padding: "10px 14px", borderTop: i === 0 ? "none" : "1px dashed #e2d9c3", fontSize: 13, alignItems: "center" }}>
-                    <div>{e.date}</div>
-                    <div>
-                      <div style={{ fontWeight: 700 }}>{e.category}</div>
-                      {e.note && <div style={{ fontSize: 12, color: "#9a8f6f" }}>{e.note}</div>}
+                <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, overflow: "hidden" }}>
+                  {g.items.map((e, i) => (
+                    <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 16px", borderTop: i === 0 ? "none" : "1px dashed #e2d9c3" }}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 700 }}>{e.category}</div>
+                        <div style={{ fontSize: 12, color: "#9a8f6f" }}>{e.note} {fmtDateTime(e.created_at)}</div>
+                      </div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: e.type === "income" ? "#2f6e51" : "#b0413e" }}>
+                        {e.type === "income" ? "+" : "-"}{fmt(e.amount)}
+                      </div>
                     </div>
-                    <div style={{ color: e.type === "income" ? "#2f6e51" : "#b0413e" }}>{e.type === "income" ? "รายรับ" : "รายจ่าย"}</div>
-                    <div style={{ fontWeight: 700, color: e.type === "income" ? "#2f6e51" : "#b0413e" }}>
-                      {e.type === "income" ? "+" : "-"}{fmt(e.amount)}
-                    </div>
-                    <div style={{ fontSize: 11, color: "#9a8f6f", wordBreak: "break-all" }}>{e.user_id}</div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            )}
+            ))}
           </div>
         ) : (
         <>
