@@ -37,6 +37,14 @@ export default function ExpenseTracker({ session, onLogout }) {
   const [error, setError] = useState("");
   const [networkError, setNetworkError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
+
+  function isAuthError(err) {
+    if (!err) return false;
+    const msg = (err.message || "").toLowerCase();
+    return err.status === 401 || msg.includes("jwt") || msg.includes("token") || msg.includes("auth");
+  }
 
   async function loadEntries() {
     setNetworkError("");
@@ -46,7 +54,11 @@ export default function ExpenseTracker({ session, onLogout }) {
       .order("date", { ascending: false })
       .order("created_at", { ascending: false });
     if (fetchError) {
-      setNetworkError("โหลดข้อมูลไม่สำเร็จ: " + fetchError.message);
+      setNetworkError(
+        isAuthError(fetchError)
+          ? "เซสชันหมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่"
+          : "โหลดข้อมูลไม่สำเร็จ: " + fetchError.message
+      );
     } else {
       setEntries(data || []);
     }
@@ -99,6 +111,11 @@ export default function ExpenseTracker({ session, onLogout }) {
     return Array.from(map.values()).sort((a, b) => b.key.localeCompare(a.key));
   }, [entries, filter, groupMode, selectedPeriod]);
 
+  const pendingEntry = useMemo(
+    () => entries.find((e) => e.id === pendingDeleteId) || null,
+    [entries, pendingDeleteId]
+  );
+
   const catSummary = useMemo(() => {
     const map = new Map();
     for (const e of entries) {
@@ -135,20 +152,42 @@ export default function ExpenseTracker({ session, onLogout }) {
       .single();
     setSaving(false);
     if (insertError) {
-      setNetworkError("บันทึกรายการไม่สำเร็จ: " + insertError.message);
+      setNetworkError(
+        isAuthError(insertError)
+          ? "เซสชันหมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่"
+          : "บันทึกรายการไม่สำเร็จ: " + insertError.message
+      );
       return;
     }
     setEntries((prev) => [data, ...prev]);
     setAmount(""); setNote("");
   }
 
-  async function removeEntry(id) {
+  function requestDelete(id) {
+    if (deletingId) return; // กันกดลบซ้ำระหว่างที่รายการก่อนหน้ายังลบไม่เสร็จ
+    setPendingDeleteId(id);
+  }
+
+  function cancelDelete() {
+    setPendingDeleteId(null);
+  }
+
+  async function confirmDelete() {
+    const id = pendingDeleteId;
+    if (!id) return;
+    setPendingDeleteId(null);
     const prevEntries = entries;
+    setDeletingId(id);
     setEntries((prev) => prev.filter((e) => e.id !== id));
     setNetworkError("");
     const { error: deleteError } = await supabase.from("entries").delete().eq("id", id);
+    setDeletingId(null);
     if (deleteError) {
-      setNetworkError("ลบรายการไม่สำเร็จ: " + deleteError.message);
+      setNetworkError(
+        isAuthError(deleteError)
+          ? "เซสชันหมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่"
+          : "ลบรายการไม่สำเร็จ: " + deleteError.message
+      );
       setEntries(prevEntries);
     }
   }
@@ -167,8 +206,9 @@ export default function ExpenseTracker({ session, onLogout }) {
   }
 
   return (
-    <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Noto Sans Thai', 'Segoe UI', Roboto, sans-serif", background: paper, minHeight: "100vh", padding: "20px 14px", color: inkColor, boxSizing: "border-box" }}>
+    <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Noto Sans Thai', 'Segoe UI', Roboto, sans-serif", background: paper, minHeight: "100vh", padding: "20px 14px", color: inkColor, boxSizing: "border-box", WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
       <style>{`
+        * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; }
         .et-wrap { max-width: 980px; margin: 0 auto; }
         .et-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
         @media (min-width: 800px) {
@@ -177,6 +217,10 @@ export default function ExpenseTracker({ session, onLogout }) {
         .et-input { width: 100%; padding: 10px 11px; border-radius: 6px; border: 1px solid #cbbf9e; font-family: inherit; box-sizing: border-box; font-size: 15px; }
         .et-select { width: 100%; padding: 10px 32px 10px 11px; border-radius: 6px; border: 1px solid #cbbf9e; font-family: inherit; box-sizing: border-box; font-size: 15px; appearance: none; background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2320304a' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") no-repeat right 11px center; }
         .et-btn { cursor: pointer; font-family: inherit; }
+        .et-modal-overlay { position: fixed; inset: 0; background: rgba(32,48,74,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; box-sizing: border-box; animation: et-fade-in 0.15s ease-out; }
+        .et-modal-card { background: #fff; border-radius: 12px; max-width: 360px; width: 100%; padding: 24px; box-sizing: border-box; box-shadow: 0 12px 32px rgba(32,48,74,0.25); animation: et-pop-in 0.18s ease-out; }
+        @keyframes et-fade-in { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes et-pop-in { from { opacity: 0; transform: scale(0.96) translateY(4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
       `}</style>
       <div className="et-wrap">
         {session && (
@@ -319,7 +363,7 @@ export default function ExpenseTracker({ session, onLogout }) {
                         <div style={{ fontSize: 15, fontWeight: 700, color: e.type === "income" ? "#2f6e51" : "#b0413e" }}>
                           {e.type === "income" ? "+" : "-"}{fmt(e.amount)}
                         </div>
-                        <button className="et-btn" onClick={() => removeEntry(e.id)} aria-label="ลบรายการ" style={{ border: "none", background: "transparent", color: "#b0a688", fontSize: 16, padding: 4 }}>×</button>
+                        <button className="et-btn" onClick={() => requestDelete(e.id)} disabled={deletingId !== null} aria-label="ลบรายการ" style={{ border: "none", background: "transparent", color: "#b0a688", fontSize: 16, padding: 4, opacity: deletingId === e.id ? 0.4 : deletingId !== null ? 0.7 : 1, cursor: deletingId !== null ? "default" : "pointer" }}>×</button>
                       </div>
                     </div>
                   ))}
@@ -333,6 +377,34 @@ export default function ExpenseTracker({ session, onLogout }) {
           ข้อมูลถูกบันทึกไว้ในระบบฐานข้อมูลของคุณโดยอัตโนมัติ
         </div>
       </div>
+
+      {pendingEntry && (
+        <div className="et-modal-overlay" onClick={cancelDelete}>
+          <div className="et-modal-card" onClick={(ev) => ev.stopPropagation()}>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>ยืนยันลบรายการ</div>
+            <div style={{ fontSize: 14, color: "#5a5240", marginBottom: 4 }}>
+              การลบไม่สามารถย้อนกลับได้ ต้องการลบรายการนี้ใช่ไหม?
+            </div>
+            <div style={{ background: paper, borderRadius: 8, padding: "10px 14px", margin: "14px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{pendingEntry.category}</div>
+                {pendingEntry.note && <div style={{ fontSize: 12, color: "#9a8f6f" }}>{pendingEntry.note}</div>}
+              </div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: pendingEntry.type === "income" ? "#2f6e51" : "#b0413e" }}>
+                {pendingEntry.type === "income" ? "+" : "-"}{fmt(pendingEntry.amount)}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="et-btn" onClick={cancelDelete} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: "transparent", color: inkColor, fontWeight: 700, fontSize: 14 }}>
+                ยกเลิก
+              </button>
+              <button className="et-btn" onClick={confirmDelete} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "none", background: "#b0413e", color: "#fff", fontWeight: 700, fontSize: 14 }}>
+                ลบรายการ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
