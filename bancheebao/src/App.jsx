@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "./supabaseClient";
 
-const EXPENSE_CATS = ["อาหาร", "เดินทาง", "ที่พัก", "ช้อปปิ้ง", "บิล", "บันเทิง", "สุขภาพ", "อื่นๆ"];
+const EXPENSE_CATS = ["อาหาร", "เดินทาง", "ที่พัก", "ช้อปปิ้ง", "บิล", "อื่นๆ"];
 const INCOME_CATS = ["เงินเดือน", "โบนัส", "ของขวัญ", "ฟรีแลนซ์", "อื่นๆ"];
 const ADMIN_UID = "f8488495-4086-45e6-a797-ee9b965006b9";
 
@@ -10,6 +10,30 @@ function fmt(n) {
 }
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
+}
+function daysAgoStr(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+const THAI_MONTHS_SHORT = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+const THAI_WEEKDAYS = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"];
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+function toISODate(year, month, day) {
+  return `${year}-${pad2(month + 1)}-${pad2(day)}`;
+}
+function buildMonthGrid(year, month) {
+  const firstDay = new Date(year, month, 1);
+  const startWeekday = firstDay.getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+  return cells;
 }
 function fmtDateTime(isoStr) {
   if (!isoStr) return "";
@@ -57,12 +81,78 @@ export default function ExpenseTracker({ session, onLogout }) {
   const [filter, setFilter] = useState(() => loadUiState().filter || "all");
   const [groupMode, setGroupMode] = useState(() => loadUiState().groupMode || "day");
   const [selectedPeriod, setSelectedPeriod] = useState(() => loadUiState().selectedPeriod || "all");
+  const [quickRange, setQuickRange] = useState(() => loadUiState().quickRange || "7d"); // "all" | "today" | "3d" | "7d"
+  const [customRange, setCustomRange] = useState(() => loadUiState().customRange || null); // {start, end} | null
+  const [calendarMode, setCalendarMode] = useState("single"); // "single" | "range"
+  const [rangeAnchor, setRangeAnchor] = useState(null); // iso string ของวันเริ่มต้นที่กดไว้ระหว่างเลือกช่วง
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [calendarView, setCalendarView] = useState(() => {
+    const d = new Date();
+    return { year: d.getFullYear(), month: d.getMonth() }; // month: 0-indexed
+  });
+  const calendarRef = useRef(null);
   const [catView, setCatView] = useState(() => loadUiState().catView || "expense");
+  const [categoryFilter, setCategoryFilter] = useState(() => loadUiState().categoryFilter || null);
   const [error, setError] = useState("");
   const [networkError, setNetworkError] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  const [editingEntry, setEditingEntry] = useState(null); // entry object ที่กำลังแก้ไข หรือ null
+  const [editType, setEditType] = useState("expense");
+  const [editAmount, setEditAmount] = useState("");
+  const [editCategory, setEditCategory] = useState("");
+  const [editNote, setEditNote] = useState("");
+  const [editDate, setEditDate] = useState("");
+  const [editError, setEditError] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+
+  function openEdit(entry) {
+    setEditingEntry(entry);
+    setEditType(entry.type);
+    setEditAmount(String(entry.amount));
+    setEditCategory(entry.category);
+    setEditNote(entry.note || "");
+    setEditDate(entry.date);
+    setEditError("");
+  }
+
+  function closeEdit() {
+    setEditingEntry(null);
+  }
+
+  async function saveEdit() {
+    const amt = parseFloat(editAmount);
+    if (!amt || amt <= 0) {
+      setEditError("กรอกจำนวนเงินให้ถูกต้อง");
+      return;
+    }
+    setEditError("");
+    setEditSaving(true);
+    const { data, error: updateError } = await supabase
+      .from("entries")
+      .update({
+        type: editType,
+        amount: Math.round(amt * 100) / 100,
+        category: editCategory,
+        note: editNote.trim(),
+        date: editDate,
+      })
+      .eq("id", editingEntry.id)
+      .select()
+      .single();
+    setEditSaving(false);
+    if (updateError) {
+      setEditError(
+        isAuthError(updateError)
+          ? "เซสชันหมดอายุ กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่"
+          : "บันทึกการแก้ไขไม่สำเร็จ: " + updateError.message
+      );
+      return;
+    }
+    setEntries((prev) => prev.map((e) => (e.id === data.id ? data : e)));
+    setEditingEntry(null);
+  }
   const isAdmin = session?.user?.id === ADMIN_UID;
   const [viewMode, setViewMode] = useState(() => (isAdmin && loadUiState().viewMode === "admin" ? "admin" : "user"));
   const [adminEntries, setAdminEntries] = useState([]);
@@ -129,8 +219,8 @@ export default function ExpenseTracker({ session, onLogout }) {
   }, [groupMode]);
 
   useEffect(() => {
-    saveUiState({ type, filter, groupMode, selectedPeriod, catView, viewMode: isAdmin ? viewMode : "user" });
-  }, [type, filter, groupMode, selectedPeriod, catView, viewMode, isAdmin]);
+    saveUiState({ type, filter, groupMode, selectedPeriod, quickRange, customRange, catView, categoryFilter, viewMode: isAdmin ? viewMode : "user" });
+  }, [type, filter, groupMode, selectedPeriod, quickRange, customRange, catView, categoryFilter, viewMode, isAdmin]);
 
   useEffect(() => {
     if (isAdmin && viewMode === "admin") {
@@ -148,6 +238,19 @@ export default function ExpenseTracker({ session, onLogout }) {
     return { income, expense, balance: income - expense };
   }, [entries]);
 
+  const entriesDatesSet = useMemo(() => new Set(entries.map((e) => e.date)), [entries]);
+
+  useEffect(() => {
+    if (!calendarOpen) return;
+    function handleClickOutside(ev) {
+      if (calendarRef.current && !calendarRef.current.contains(ev.target)) {
+        setCalendarOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [calendarOpen]);
+
   const periodOptions = useMemo(() => {
     const map = new Map();
     for (const e of entries) {
@@ -159,8 +262,14 @@ export default function ExpenseTracker({ session, onLogout }) {
 
   const grouped = useMemo(() => {
     let list = [...entries];
+    if (customRange) {
+      list = list.filter((e) => e.date >= customRange.start && e.date <= customRange.end);
+    } else if (quickRange === "today") list = list.filter((e) => e.date === todayStr());
+    else if (quickRange === "3d") list = list.filter((e) => e.date >= daysAgoStr(2));
+    else if (quickRange === "7d") list = list.filter((e) => e.date >= daysAgoStr(6));
+    else if (selectedPeriod !== "all") list = list.filter((e) => groupKey(e.date, groupMode) === selectedPeriod);
     if (filter !== "all") list = list.filter((e) => e.type === filter);
-    if (selectedPeriod !== "all") list = list.filter((e) => groupKey(e.date, groupMode) === selectedPeriod);
+    if (categoryFilter) list = list.filter((e) => e.type === categoryFilter.type && e.category === categoryFilter.category);
     list.sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id));
     const map = new Map();
     for (const e of list) {
@@ -171,7 +280,7 @@ export default function ExpenseTracker({ session, onLogout }) {
       if (e.type === "income") g.income += e.amount; else g.expense += e.amount;
     }
     return Array.from(map.values()).sort((a, b) => b.key.localeCompare(a.key));
-  }, [entries, filter, groupMode, selectedPeriod]);
+  }, [entries, filter, groupMode, selectedPeriod, quickRange, customRange, categoryFilter]);
 
   const pendingEntry = useMemo(
     () => entries.find((e) => e.id === pendingDeleteId) || null,
@@ -417,52 +526,179 @@ export default function ExpenseTracker({ session, onLogout }) {
                 </div>
               </div>
               {catSummary.arr.length === 0 && <div style={{ fontSize: 13, color: "#9a8f6f" }}>ยังไม่มีข้อมูล</div>}
-              {catSummary.arr.map((c) => (
-                <div key={c.category} style={{ marginBottom: 8 }}>
+              {catSummary.arr.map((c) => {
+                const isActive = categoryFilter && categoryFilter.type === catView && categoryFilter.category === c.category;
+                return (
+                <div
+                  key={c.category}
+                  onClick={() => setCategoryFilter(isActive ? null : { type: catView, category: c.category })}
+                  style={{ marginBottom: 8, cursor: "pointer", padding: "4px 6px", margin: "-4px -6px 4px -6px", borderRadius: 6, background: isActive ? "#f0e4c4" : "transparent" }}
+                >
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 3 }}>
-                    <span>{c.category}</span>
+                    <span style={{ fontWeight: isActive ? 700 : 400, color: isActive ? gold : inkColor }}>{isActive ? "● " : ""}{c.category}</span>
                     <span style={{ fontWeight: 700 }}>{fmt(c.amount)}</span>
                   </div>
                   <div style={{ height: 6, background: "#efe9d8", borderRadius: 3, overflow: "hidden" }}>
                     <div style={{ height: "100%", width: `${catSummary.max ? (c.amount / catSummary.max) * 100 : 0}%`, background: catColor, borderRadius: 3 }} />
                   </div>
                 </div>
-              ))}
+                );
+              })}
+              {categoryFilter && (
+                <button
+                  className="et-btn"
+                  onClick={() => setCategoryFilter(null)}
+                  style={{ marginTop: 4, fontSize: 12, padding: "4px 10px", borderRadius: 14, border: "1px solid #cbbf9e", background: "transparent", color: inkColor }}
+                >
+                  ล้างตัวกรองหมวดหมู่
+                </button>
+              )}
             </div>
           </div>
 
           <div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12, justifyContent: "space-between" }}>
-              <div style={{ display: "flex", gap: 6 }}>
-                {[["all", "ทั้งหมด"], ["income", "รายรับ"], ["expense", "รายจ่าย"]].map(([k, l]) => (
-                  <button key={k} className="et-btn" onClick={() => setFilter(k)} style={{ padding: "6px 14px", borderRadius: 20, border: "1px solid #cbbf9e", background: filter === k ? inkColor : "transparent", color: filter === k ? "#fff" : inkColor, fontSize: 13 }}>{l}</button>
-                ))}
-              </div>
-              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+              <span style={{ fontSize: 12, color: "#9a8f6f", alignSelf: "center", marginRight: 2 }}>แสดง:</span>
+              {[["today", "วันนี้"], ["3d", "3 วันล่าสุด"], ["7d", "7 วันล่าสุด"], ["all", "ทั้งหมด"]].map(([k, l]) => (
+                <button key={k} className="et-btn" onClick={() => { setQuickRange(k); setSelectedPeriod("all"); setCustomRange(null); }} style={{ padding: "5px 12px", borderRadius: 20, border: "1px solid #cbbf9e", background: quickRange === k ? inkColor : "transparent", color: quickRange === k ? "#fff" : inkColor, fontSize: 12 }}>{l}</button>
+              ))}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+              {[["all", "ทั้งหมด"], ["income", "รายรับ"], ["expense", "รายจ่าย"]].map(([k, l]) => (
+                <button key={k} className="et-btn" onClick={() => setFilter(k)} style={{ padding: "6px 14px", borderRadius: 20, border: "1px solid #cbbf9e", background: filter === k ? inkColor : "transparent", color: filter === k ? "#fff" : inkColor, fontSize: 13 }}>{l}</button>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}>
                 {[["day", "รายวัน"], ["month", "รายเดือน"], ["year", "รายปี"]].map(([k, l]) => (
                   <button key={k} className="et-btn" onClick={() => setGroupMode(k)} style={{ padding: "6px 14px", borderRadius: 20, border: "1px solid #cbbf9e", background: groupMode === k ? gold : "transparent", color: groupMode === k ? "#fff" : inkColor, fontSize: 13 }}>{l}</button>
                 ))}
-                <select
-                  className="et-select"
-                  value={selectedPeriod}
-                  onChange={(e) => setSelectedPeriod(e.target.value)}
-                  style={{ width: "auto", minWidth: 140, padding: "6px 30px 6px 12px", fontSize: 13 }}
-                >
-                  <option value="all">ทุกช่วงเวลา</option>
-                  {periodOptions.map(([key, label]) => (
-                    <option key={key} value={key}>{label}</option>
-                  ))}
-                </select>
+                {groupMode === "day" ? (
+                  <div ref={calendarRef} style={{ position: "relative" }}>
+                    <button
+                      className="et-btn"
+                      onClick={() => {
+                        if (!calendarOpen) {
+                          const anchorDate = customRange ? customRange.start : selectedPeriod !== "all" ? selectedPeriod : null;
+                          if (anchorDate) {
+                            const d = new Date(anchorDate + "T00:00:00");
+                            setCalendarView({ year: d.getFullYear(), month: d.getMonth() });
+                          }
+                        }
+                        setCalendarOpen((v) => !v);
+                      }}
+                      style={{ padding: "6px 14px", borderRadius: 20, border: "1px solid #cbbf9e", background: (selectedPeriod !== "all" || customRange) ? gold : "transparent", color: (selectedPeriod !== "all" || customRange) ? "#fff" : inkColor, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
+                    >
+                      📅 {customRange ? `${groupLabel(customRange.start, "day")} - ${groupLabel(customRange.end, "day")}` : selectedPeriod === "all" ? "ทุกวัน" : groupLabel(selectedPeriod, "day")}
+                    </button>
+                    {calendarOpen && (
+                      <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 50, background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, boxShadow: "0 8px 24px rgba(32,48,74,0.18)", padding: 14, width: 260 }}>
+                        <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                          <button className="et-btn" onClick={() => { setCalendarMode("single"); setRangeAnchor(null); }} style={{ flex: 1, padding: "5px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: calendarMode === "single" ? inkColor : "transparent", color: calendarMode === "single" ? "#fff" : inkColor, fontSize: 12 }}>วันเดียว</button>
+                          <button className="et-btn" onClick={() => { setCalendarMode("range"); setRangeAnchor(null); }} style={{ flex: 1, padding: "5px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: calendarMode === "range" ? inkColor : "transparent", color: calendarMode === "range" ? "#fff" : inkColor, fontSize: 12 }}>ช่วงวันที่</button>
+                        </div>
+                        {calendarMode === "range" && (
+                          <div style={{ fontSize: 11, color: "#9a8f6f", marginBottom: 8, textAlign: "center" }}>
+                            {rangeAnchor ? `เลือกวันสิ้นสุด (เริ่ม ${groupLabel(rangeAnchor, "day")})` : "เลือกวันเริ่มต้น"}
+                          </div>
+                        )}
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                          <button className="et-btn" onClick={() => setCalendarView((v) => v.month === 0 ? { year: v.year - 1, month: 11 } : { year: v.year, month: v.month - 1 })} style={{ border: "none", background: "transparent", color: inkColor, fontSize: 16, padding: 4 }}>‹</button>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: inkColor }}>
+                            {THAI_MONTHS_SHORT[calendarView.month]} {calendarView.year + 543}
+                          </div>
+                          <button className="et-btn" onClick={() => setCalendarView((v) => v.month === 11 ? { year: v.year + 1, month: 0 } : { year: v.year, month: v.month + 1 })} style={{ border: "none", background: "transparent", color: inkColor, fontSize: 16, padding: 4 }}>›</button>
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 4 }}>
+                          {THAI_WEEKDAYS.map((w) => (
+                            <div key={w} style={{ textAlign: "center", fontSize: 11, color: "#9a8f6f", padding: "2px 0" }}>{w}</div>
+                          ))}
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2 }}>
+                          {buildMonthGrid(calendarView.year, calendarView.month).map((day, idx) => {
+                            if (day === null) return <div key={idx} />;
+                            const iso = toISODate(calendarView.year, calendarView.month, day);
+                            const isToday = iso === todayStr();
+                            const hasEntry = entriesDatesSet.has(iso);
+                            const isSingleSelected = calendarMode === "single" && selectedPeriod === iso;
+                            const isRangeAnchor = calendarMode === "range" && rangeAnchor === iso;
+                            const inRange = calendarMode === "range" && customRange && iso >= customRange.start && iso <= customRange.end;
+                            const isRangeEdge = calendarMode === "range" && customRange && (iso === customRange.start || iso === customRange.end);
+                            const isSelected = isSingleSelected || isRangeAnchor || isRangeEdge;
+                            return (
+                              <button
+                                key={idx}
+                                className="et-btn"
+                                onClick={() => {
+                                  if (calendarMode === "single") {
+                                    setSelectedPeriod(iso);
+                                    setQuickRange("all");
+                                    setCustomRange(null);
+                                    setCalendarOpen(false);
+                                  } else {
+                                    if (!rangeAnchor) {
+                                      setRangeAnchor(iso);
+                                    } else {
+                                      const start = iso < rangeAnchor ? iso : rangeAnchor;
+                                      const end = iso < rangeAnchor ? rangeAnchor : iso;
+                                      setCustomRange({ start, end });
+                                      setQuickRange("all");
+                                      setSelectedPeriod("all");
+                                      setRangeAnchor(null);
+                                      setCalendarOpen(false);
+                                    }
+                                  }
+                                }}
+                                style={{
+                                  aspectRatio: "1",
+                                  border: isToday && !isSelected ? "1px solid #9c7a34" : "1px solid transparent",
+                                  borderRadius: inRange && !isRangeEdge ? 0 : 6,
+                                  background: isSelected ? gold : inRange ? "#f0e4c4" : "transparent",
+                                  color: isSelected ? "#fff" : inkColor,
+                                  fontSize: 12,
+                                  position: "relative",
+                                  padding: 0,
+                                }}
+                              >
+                                {day}
+                                {hasEntry && !isSelected && (
+                                  <span style={{ position: "absolute", bottom: 2, left: "50%", transform: "translateX(-50%)", width: 4, height: 4, borderRadius: "50%", background: "#9c7a34" }} />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <button
+                          className="et-btn"
+                          onClick={() => { setSelectedPeriod("all"); setCustomRange(null); setRangeAnchor(null); setCalendarOpen(false); }}
+                          style={{ width: "100%", marginTop: 10, padding: "7px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: "transparent", color: inkColor, fontSize: 13 }}
+                        >
+                          ทั้งหมด (ล้างตัวเลือก)
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <select
+                    className="et-select"
+                    value={selectedPeriod}
+                    onChange={(e) => { setSelectedPeriod(e.target.value); setQuickRange("all"); setCustomRange(null); }}
+                    style={{ width: "auto", minWidth: 140, padding: "6px 30px 6px 12px", fontSize: 13 }}
+                  >
+                    <option value="all">ทุกช่วงเวลา</option>
+                    {periodOptions.map(([key, label]) => (
+                      <option key={key} value={key}>{label}</option>
+                    ))}
+                  </select>
+                )}
               </div>
-            </div>
 
-            {selectedPeriod !== "all" && grouped.length === 0 && (
+            {entries.length > 0 && grouped.length === 0 && (
               <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, padding: 24, textAlign: "center", color: "#9a8f6f", fontSize: 14, marginBottom: 16 }}>
-                ไม่มีรายการในช่วงเวลาที่เลือก
+                ไม่มีรายการในช่วงเวลาที่เลือก ลองเปลี่ยนตัวกรอง "แสดง" หรือ "ช่วงเวลา" ดูครับ
               </div>
             )}
 
-            {selectedPeriod === "all" && grouped.length === 0 && (
+            {entries.length === 0 && (
               <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, padding: 24, textAlign: "center", color: "#9a8f6f", fontSize: 14 }}>
                 ยังไม่มีรายการ เริ่มบันทึกรายการแรกได้เลย
               </div>
@@ -480,8 +716,8 @@ export default function ExpenseTracker({ session, onLogout }) {
                 <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, overflow: "hidden" }}>
                   {g.items.map((e, i) => (
                     <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 16px", borderTop: i === 0 ? "none" : "1px dashed #e2d9c3" }}>
-                      <div>
-                        <div style={{ fontSize: 14, fontWeight: 700 }}>{e.category}</div>
+                      <div style={{ cursor: "pointer" }} onClick={() => openEdit(e)}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: inkColor, textDecoration: "underline", textDecorationColor: "#e2d9c3", textUnderlineOffset: 3 }}>{e.category}</div>
                         <div style={{ fontSize: 12, color: "#9a8f6f" }}>{e.note}</div>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -527,6 +763,35 @@ export default function ExpenseTracker({ session, onLogout }) {
               </button>
               <button className="et-btn" onClick={confirmDelete} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "none", background: "#b0413e", color: "#fff", fontWeight: 700, fontSize: 14 }}>
                 ลบรายการ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingEntry && (
+        <div className="et-modal-overlay" onClick={closeEdit}>
+          <div className="et-modal-card" onClick={(ev) => ev.stopPropagation()}>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 12 }}>แก้ไขรายการ</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <button className="et-btn" onClick={() => setEditType("expense")} style={{ flex: 1, padding: "9px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: editType === "expense" ? "#b0413e" : "transparent", color: editType === "expense" ? "#fff" : inkColor, fontWeight: 700 }}>รายจ่าย</button>
+              <button className="et-btn" onClick={() => setEditType("income")} style={{ flex: 1, padding: "9px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: editType === "income" ? "#2f6e51" : "transparent", color: editType === "income" ? "#fff" : inkColor, fontWeight: 700 }}>รายรับ</button>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <input className="et-input" type="number" placeholder="จำนวนเงิน" value={editAmount} onChange={(ev) => setEditAmount(ev.target.value)} />
+              <input className="et-input" type="date" value={editDate} onChange={(ev) => setEditDate(ev.target.value)} style={{ maxWidth: 150 }} />
+            </div>
+            <select className="et-select" value={editCategory} onChange={(ev) => setEditCategory(ev.target.value)} style={{ marginBottom: 10 }}>
+              {(editType === "expense" ? EXPENSE_CATS : INCOME_CATS).map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <input className="et-input" type="text" placeholder="โน้ต (ไม่บังคับ)" value={editNote} onChange={(ev) => setEditNote(ev.target.value)} style={{ marginBottom: 12 }} />
+            {editError && <div style={{ color: "#b0413e", fontSize: 13, marginBottom: 8 }}>{editError}</div>}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="et-btn" onClick={closeEdit} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: "transparent", color: inkColor, fontWeight: 700, fontSize: 14 }}>
+                ยกเลิก
+              </button>
+              <button className="et-btn" onClick={saveEdit} disabled={editSaving} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "none", background: gold, color: "#fff", fontWeight: 700, fontSize: 14, opacity: editSaving ? 0.6 : 1 }}>
+                {editSaving ? "กำลังบันทึก..." : "บันทึกการแก้ไข"}
               </button>
             </div>
           </div>
