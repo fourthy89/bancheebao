@@ -21,7 +21,7 @@ function groupKey(dateStr, mode) {
   return dateStr.slice(0, 4);
 }
 
-export default function ExpenseTracker() {
+export default function ExpenseTracker({ session, onLogout }) {
   const [entries, setEntries] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [type, setType] = useState("expense");
@@ -140,6 +140,18 @@ export default function ExpenseTracker() {
         .et-btn { cursor: pointer; font-family: inherit; }
       `}</style>
       <div className="et-wrap">
+        {session && (
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 12, marginBottom: 8, fontSize: 13 }}>
+            <span style={{ color: "#5a5240" }}>{session.user?.email}</span>
+            <button
+              className="et-btn"
+              onClick={onLogout}
+              style={{ border: "1px solid #cbbf9e", background: "#fff", color: inkColor, borderRadius: 6, padding: "5px 12px", fontSize: 13 }}
+            >
+              ออกจากระบบ
+            </button>
+          </div>
+        )}
         <div style={{ textAlign: "center", marginBottom: 20 }}>
           <div style={{ fontSize: 12, letterSpacing: 3, color: gold, marginBottom: 4 }}>BANCHEEBAO · สมุดบัญชี</div>
           <div style={{ fontSize: 24, fontWeight: 700 }}>บัญชีรายรับรายจ่าย</div>
