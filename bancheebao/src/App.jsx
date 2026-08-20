@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { supabase } from "./supabaseClient";
 
 const EXPENSE_CATS = ["อาหาร", "เดินทาง", "ที่พัก", "ช้อปปิ้ง", "บิล", "บันเทิง", "สุขภาพ", "อื่นๆ"];
 const INCOME_CATS = ["เงินเดือน", "โบนัส", "ของขวัญ", "ฟรีแลนซ์", "อื่นๆ"];
@@ -34,21 +35,27 @@ export default function ExpenseTracker({ session, onLogout }) {
   const [selectedPeriod, setSelectedPeriod] = useState("all");
   const [catView, setCatView] = useState("expense");
   const [error, setError] = useState("");
+  const [networkError, setNetworkError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function loadEntries() {
+    setNetworkError("");
+    const { data, error: fetchError } = await supabase
+      .from("entries")
+      .select("*")
+      .order("date", { ascending: false })
+      .order("created_at", { ascending: false });
+    if (fetchError) {
+      setNetworkError("โหลดข้อมูลไม่สำเร็จ: " + fetchError.message);
+    } else {
+      setEntries(data || []);
+    }
+    setLoaded(true);
+  }
 
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await window.storage.get("entries", false);
-        if (res && res.value) setEntries(JSON.parse(res.value));
-      } catch (e) {}
-      setLoaded(true);
-    })();
+    loadEntries();
   }, []);
-
-  useEffect(() => {
-    if (!loaded) return;
-    window.storage.set("entries", JSON.stringify(entries), false).catch(() => {});
-  }, [entries, loaded]);
 
   useEffect(() => {
     setCategory(type === "expense" ? EXPENSE_CATS[0] : INCOME_CATS[0]);
@@ -104,28 +111,60 @@ export default function ExpenseTracker({ session, onLogout }) {
     return { arr, max };
   }, [entries, catView]);
 
-  function addEntry() {
+  async function addEntry() {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) {
       setError("กรอกจำนวนเงินให้ถูกต้อง");
       return;
     }
-    const entry = {
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      type, amount: Math.round(amt * 100) / 100, category, note: note.trim(), date,
+    setError("");
+    setNetworkError("");
+    setSaving(true);
+    const newEntry = {
+      user_id: session.user.id,
+      type,
+      amount: Math.round(amt * 100) / 100,
+      category,
+      note: note.trim(),
+      date,
     };
-    setEntries((prev) => [...prev, entry]);
-    setAmount(""); setNote(""); setError("");
+    const { data, error: insertError } = await supabase
+      .from("entries")
+      .insert(newEntry)
+      .select()
+      .single();
+    setSaving(false);
+    if (insertError) {
+      setNetworkError("บันทึกรายการไม่สำเร็จ: " + insertError.message);
+      return;
+    }
+    setEntries((prev) => [data, ...prev]);
+    setAmount(""); setNote("");
   }
 
-  function removeEntry(id) {
+  async function removeEntry(id) {
+    const prevEntries = entries;
     setEntries((prev) => prev.filter((e) => e.id !== id));
+    setNetworkError("");
+    const { error: deleteError } = await supabase.from("entries").delete().eq("id", id);
+    if (deleteError) {
+      setNetworkError("ลบรายการไม่สำเร็จ: " + deleteError.message);
+      setEntries(prevEntries);
+    }
   }
 
   const inkColor = "#20304a";
   const paper = "#f4efe3";
   const gold = "#9c7a34";
   const catColor = catView === "expense" ? "#b0413e" : "#2f6e51";
+
+  if (!loaded) {
+    return (
+      <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Noto Sans Thai', 'Segoe UI', Roboto, sans-serif", background: paper, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: inkColor }}>
+        กำลังโหลดข้อมูล...
+      </div>
+    );
+  }
 
   return (
     <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Noto Sans Thai', 'Segoe UI', Roboto, sans-serif", background: paper, minHeight: "100vh", padding: "20px 14px", color: inkColor, boxSizing: "border-box" }}>
@@ -156,6 +195,12 @@ export default function ExpenseTracker({ session, onLogout }) {
           <div style={{ fontSize: 12, letterSpacing: 3, color: gold, marginBottom: 4 }}>BANCHEEBAO · สมุดบัญชี</div>
           <div style={{ fontSize: 24, fontWeight: 700 }}>บัญชีรายรับรายจ่าย</div>
         </div>
+
+        {networkError && (
+          <div style={{ background: "#fdecea", border: "1px solid #e19a92", color: "#b0413e", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13 }}>
+            {networkError}
+          </div>
+        )}
 
         <div className="et-grid">
           <div>
@@ -191,7 +236,7 @@ export default function ExpenseTracker({ session, onLogout }) {
               </select>
               <input className="et-input" type="text" placeholder="โน้ต (ไม่บังคับ)" value={note} onChange={(e) => setNote(e.target.value)} style={{ marginBottom: 12 }} />
               {error && <div style={{ color: "#b0413e", fontSize: 13, marginBottom: 8 }}>{error}</div>}
-              <button className="et-btn" onClick={addEntry} style={{ width: "100%", padding: "11px 0", borderRadius: 6, border: "none", background: gold, color: "#fff", fontWeight: 700, fontSize: 15 }}>บันทึกรายการ</button>
+              <button className="et-btn" onClick={addEntry} disabled={saving} style={{ width: "100%", padding: "11px 0", borderRadius: 6, border: "none", background: gold, color: "#fff", fontWeight: 700, fontSize: 15, opacity: saving ? 0.6 : 1, cursor: saving ? "default" : "pointer" }}>{saving ? "กำลังบันทึก..." : "บันทึกรายการ"}</button>
             </div>
 
             <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, padding: 16 }}>
@@ -285,7 +330,7 @@ export default function ExpenseTracker({ session, onLogout }) {
         </div>
 
         <div style={{ textAlign: "center", fontSize: 11, color: "#b0a688", marginTop: 16 }}>
-          ข้อมูลถูกบันทึกไว้ในเบราว์เซอร์ของคุณโดยอัตโนมัติ
+          ข้อมูลถูกบันทึกไว้ในระบบฐานข้อมูลของคุณโดยอัตโนมัติ
         </div>
       </div>
     </div>
