@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "./supabaseClient";
 
-const EXPENSE_CATS = ["อาหาร", "เดินทาง", "ที่พัก", "ช้อปปิ้ง", "บิล", "อื่นๆ"];
-const INCOME_CATS = ["เงินเดือน", "โบนัส", "ของขวัญ", "ฟรีแลนซ์", "อื่นๆ"];
+const EXPENSE_CATS = ["อาหาร", "เดินทาง", "ที่อยู่อาศัย", "บิล", "ช้อปปิ้ง", "ของใช้ส่วนตัว", "จุกจิก", "สุขภาพ", "ความบันเทิง", "แฟน", "การศึกษา", "การลงทุน", "อื่นๆ"];
+const INCOME_CATS = ["เงินเดือน", "ฟรีแลนซ์", "ธุรกิจ", "เงินปันผล", "การลงทุน", "เงินจากครอบครัว", "อื่นๆ"];
 const ADMIN_UID = "f8488495-4086-45e6-a797-ee9b965006b9";
 
 function fmt(n) {
