@@ -92,6 +92,7 @@ export default function ExpenseTracker({ session, onLogout }) {
   });
   const calendarRef = useRef(null);
   const [catView, setCatView] = useState(() => loadUiState().catView || "expense");
+  const [catCollapsed, setCatCollapsed] = useState(() => loadUiState().catCollapsed || false);
   const [categoryFilter, setCategoryFilter] = useState(() => loadUiState().categoryFilter || null);
   const [error, setError] = useState("");
   const [networkError, setNetworkError] = useState("");
@@ -219,8 +220,8 @@ export default function ExpenseTracker({ session, onLogout }) {
   }, [groupMode]);
 
   useEffect(() => {
-    saveUiState({ type, filter, groupMode, selectedPeriod, quickRange, customRange, catView, categoryFilter, viewMode: isAdmin ? viewMode : "user" });
-  }, [type, filter, groupMode, selectedPeriod, quickRange, customRange, catView, categoryFilter, viewMode, isAdmin]);
+    saveUiState({ type, filter, groupMode, selectedPeriod, quickRange, customRange, catView, catCollapsed, categoryFilter, viewMode: isAdmin ? viewMode : "user" });
+  }, [type, filter, groupMode, selectedPeriod, quickRange, customRange, catView, catCollapsed, categoryFilter, viewMode, isAdmin]);
 
   useEffect(() => {
     if (isAdmin && viewMode === "admin") {
@@ -229,14 +230,27 @@ export default function ExpenseTracker({ session, onLogout }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const filteredList = useMemo(() => {
+    let list = [...entries];
+    if (customRange) {
+      list = list.filter((e) => e.date >= customRange.start && e.date <= customRange.end);
+    } else if (quickRange === "today") list = list.filter((e) => e.date === todayStr());
+    else if (quickRange === "3d") list = list.filter((e) => e.date >= daysAgoStr(2));
+    else if (quickRange === "7d") list = list.filter((e) => e.date >= daysAgoStr(6));
+    else if (selectedPeriod !== "all") list = list.filter((e) => groupKey(e.date, groupMode) === selectedPeriod);
+    if (filter !== "all") list = list.filter((e) => e.type === filter);
+    if (categoryFilter) list = list.filter((e) => e.type === categoryFilter.type && e.category === categoryFilter.category);
+    return list;
+  }, [entries, filter, groupMode, selectedPeriod, quickRange, customRange, categoryFilter]);
+
   const totals = useMemo(() => {
     let income = 0, expense = 0;
-    for (const e of entries) {
+    for (const e of filteredList) {
       if (e.type === "income") income += e.amount;
       else expense += e.amount;
     }
     return { income, expense, balance: income - expense };
-  }, [entries]);
+  }, [filteredList]);
 
   const entriesDatesSet = useMemo(() => new Set(entries.map((e) => e.date)), [entries]);
 
@@ -261,15 +275,7 @@ export default function ExpenseTracker({ session, onLogout }) {
   }, [entries, groupMode]);
 
   const grouped = useMemo(() => {
-    let list = [...entries];
-    if (customRange) {
-      list = list.filter((e) => e.date >= customRange.start && e.date <= customRange.end);
-    } else if (quickRange === "today") list = list.filter((e) => e.date === todayStr());
-    else if (quickRange === "3d") list = list.filter((e) => e.date >= daysAgoStr(2));
-    else if (quickRange === "7d") list = list.filter((e) => e.date >= daysAgoStr(6));
-    else if (selectedPeriod !== "all") list = list.filter((e) => groupKey(e.date, groupMode) === selectedPeriod);
-    if (filter !== "all") list = list.filter((e) => e.type === filter);
-    if (categoryFilter) list = list.filter((e) => e.type === categoryFilter.type && e.category === categoryFilter.category);
+    let list = [...filteredList];
     list.sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id));
     const map = new Map();
     for (const e of list) {
@@ -280,7 +286,7 @@ export default function ExpenseTracker({ session, onLogout }) {
       if (e.type === "income") g.income += e.amount; else g.expense += e.amount;
     }
     return Array.from(map.values()).sort((a, b) => b.key.localeCompare(a.key));
-  }, [entries, filter, groupMode, selectedPeriod, quickRange, customRange, categoryFilter]);
+  }, [filteredList, groupMode]);
 
   const pendingEntry = useMemo(
     () => entries.find((e) => e.id === pendingDeleteId) || null,
@@ -518,13 +524,19 @@ export default function ExpenseTracker({ session, onLogout }) {
             </div>
 
             <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <span style={{ fontSize: 14, fontWeight: 700 }}>สรุปตามหมวดหมู่</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: catCollapsed ? 0 : 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => setCatCollapsed(!catCollapsed)}>
+                  <span style={{ fontSize: 14, fontWeight: 700 }}>สรุปตามหมวดหมู่</span>
+                  <span style={{ fontSize: 11, color: "#9a8f6f", transform: catCollapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform 0.15s", display: "inline-block" }}>▼</span>
+                </div>
+                {!catCollapsed && (
                 <div style={{ display: "flex", gap: 4 }}>
                   <button className="et-btn" onClick={() => setCatView("expense")} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 14, border: "1px solid #cbbf9e", background: catView === "expense" ? "#b0413e" : "transparent", color: catView === "expense" ? "#fff" : inkColor }}>จ่าย</button>
                   <button className="et-btn" onClick={() => setCatView("income")} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 14, border: "1px solid #cbbf9e", background: catView === "income" ? "#2f6e51" : "transparent", color: catView === "income" ? "#fff" : inkColor }}>รับ</button>
                 </div>
+                )}
               </div>
+              {!catCollapsed && <>
               {catSummary.arr.length === 0 && <div style={{ fontSize: 13, color: "#9a8f6f" }}>ยังไม่มีข้อมูล</div>}
               {catSummary.arr.map((c) => {
                 const isActive = categoryFilter && categoryFilter.type === catView && categoryFilter.category === c.category;
@@ -553,6 +565,7 @@ export default function ExpenseTracker({ session, onLogout }) {
                   ล้างตัวกรองหมวดหมู่
                 </button>
               )}
+              </>}
             </div>
           </div>
 
