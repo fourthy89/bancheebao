@@ -276,7 +276,7 @@ export default function ExpenseTracker({ session, onLogout }) {
 
   const grouped = useMemo(() => {
     let list = [...filteredList];
-    list.sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id));
+    list.sort((a, b) => (b.date + b.created_at).localeCompare(a.date + a.created_at));
     const map = new Map();
     for (const e of list) {
       const key = groupKey(e.date, groupMode);
@@ -573,12 +573,12 @@ export default function ExpenseTracker({ session, onLogout }) {
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
               <span style={{ fontSize: 12, color: "#9a8f6f", alignSelf: "center", marginRight: 2 }}>แสดง:</span>
               {[["today", "วันนี้"], ["3d", "3 วันล่าสุด"], ["7d", "7 วันล่าสุด"], ["all", "ทั้งหมด"]].map(([k, l]) => (
-                <button key={k} className="et-btn" onClick={() => { setQuickRange(k); setSelectedPeriod("all"); setCustomRange(null); }} style={{ padding: "5px 12px", borderRadius: 20, border: "1px solid #cbbf9e", background: quickRange === k ? inkColor : "transparent", color: quickRange === k ? "#fff" : inkColor, fontSize: 12 }}>{l}</button>
+                <button key={k} className="et-btn" onClick={() => { setQuickRange(k); setSelectedPeriod("all"); setCustomRange(null); setCategoryFilter(null); }} style={{ padding: "5px 12px", borderRadius: 20, border: "1px solid #cbbf9e", background: quickRange === k ? inkColor : "transparent", color: quickRange === k ? "#fff" : inkColor, fontSize: 12 }}>{l}</button>
               ))}
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
               {[["all", "ทั้งหมด"], ["income", "รายรับ"], ["expense", "รายจ่าย"]].map(([k, l]) => (
-                <button key={k} className="et-btn" onClick={() => setFilter(k)} style={{ padding: "6px 14px", borderRadius: 20, border: "1px solid #cbbf9e", background: filter === k ? inkColor : "transparent", color: filter === k ? "#fff" : inkColor, fontSize: 13 }}>{l}</button>
+                <button key={k} className="et-btn" onClick={() => { setFilter(k); setCategoryFilter(null); }} style={{ padding: "6px 14px", borderRadius: 20, border: "1px solid #cbbf9e", background: filter === k ? inkColor : "transparent", color: filter === k ? "#fff" : inkColor, fontSize: 13 }}>{l}</button>
               ))}
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}>
@@ -646,6 +646,7 @@ export default function ExpenseTracker({ session, onLogout }) {
                                     setSelectedPeriod(iso);
                                     setQuickRange("all");
                                     setCustomRange(null);
+                                    setCategoryFilter(null);
                                     setCalendarOpen(false);
                                   } else {
                                     if (!rangeAnchor) {
@@ -656,6 +657,7 @@ export default function ExpenseTracker({ session, onLogout }) {
                                       setCustomRange({ start, end });
                                       setQuickRange("all");
                                       setSelectedPeriod("all");
+                                      setCategoryFilter(null);
                                       setRangeAnchor(null);
                                       setCalendarOpen(false);
                                     }
@@ -682,7 +684,7 @@ export default function ExpenseTracker({ session, onLogout }) {
                         </div>
                         <button
                           className="et-btn"
-                          onClick={() => { setSelectedPeriod("all"); setCustomRange(null); setRangeAnchor(null); setCalendarOpen(false); }}
+                          onClick={() => { setSelectedPeriod("all"); setCustomRange(null); setCategoryFilter(null); setRangeAnchor(null); setCalendarOpen(false); }}
                           style={{ width: "100%", marginTop: 10, padding: "7px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: "transparent", color: inkColor, fontSize: 13 }}
                         >
                           ทั้งหมด (ล้างตัวเลือก)
@@ -694,7 +696,7 @@ export default function ExpenseTracker({ session, onLogout }) {
                   <select
                     className="et-select"
                     value={selectedPeriod}
-                    onChange={(e) => { setSelectedPeriod(e.target.value); setQuickRange("all"); setCustomRange(null); }}
+                    onChange={(e) => { setSelectedPeriod(e.target.value); setQuickRange("all"); setCustomRange(null); setCategoryFilter(null); }}
                     style={{ width: "auto", minWidth: 140, padding: "6px 30px 6px 12px", fontSize: 13 }}
                   >
                     <option value="all">ทุกช่วงเวลา</option>
