@@ -544,9 +544,9 @@ export default function ExpenseTracker({ session, onLogout }) {
         @keyframes et-pop-in { from { opacity: 0; transform: scale(0.96) translateY(4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
       `}</style>
       <div className="et-wrap">
-        {session && !isMobile && (
-          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 12, marginBottom: 8, fontSize: 13 }}>
-            {viewMode !== "admin" && (
+        {session && (!isMobile || viewMode === "admin") && (
+          <div style={{ display: "flex", justifyContent: isMobile ? "flex-start" : "flex-end", alignItems: "center", gap: 12, marginBottom: 8, fontSize: 13 }}>
+            {viewMode !== "admin" && !isMobile && (
               <button
                 className="et-btn"
                 onClick={() => setActiveTab(activeTab === "subscription" ? "home" : "subscription")}
@@ -564,14 +564,18 @@ export default function ExpenseTracker({ session, onLogout }) {
                 {viewMode === "admin" ? "กลับหน้าหลัก" : "มุมมองแอดมิน"}
               </button>
             )}
-            <span style={{ color: "#5a5240" }}>{session.user?.email}</span>
-            <button
-              className="et-btn"
-              onClick={onLogout}
-              style={{ border: "1px solid #cbbf9e", background: "#fff", color: inkColor, borderRadius: 6, padding: "5px 12px", fontSize: 13 }}
-            >
-              ออกจากระบบ
-            </button>
+            {!isMobile && (
+              <>
+                <span style={{ color: "#5a5240" }}>{session.user?.email}</span>
+                <button
+                  className="et-btn"
+                  onClick={onLogout}
+                  style={{ border: "1px solid #cbbf9e", background: "#fff", color: inkColor, borderRadius: 6, padding: "5px 12px", fontSize: 13 }}
+                >
+                  ออกจากระบบ
+                </button>
+              </>
+            )}
           </div>
         )}
         <div style={{ textAlign: "center", marginBottom: 20 }}>
