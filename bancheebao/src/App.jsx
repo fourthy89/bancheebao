@@ -42,6 +42,11 @@ function monthlyEquivalent(sub) {
   if (sub.billing_type === "yearly") return sub.amount / 12;
   return sub.amount * (30 / (sub.custom_days || 30));
 }
+function cycleLengthDays(sub) {
+  if (sub.billing_type === "monthly") return 30;
+  if (sub.billing_type === "yearly") return 365;
+  return sub.custom_days || 30;
+}
 function buildMonthGrid(year, month) {
   const firstDay = new Date(year, month, 1);
   const startWeekday = firstDay.getDay();
@@ -152,6 +157,69 @@ export default function ExpenseTracker({ session, onLogout }) {
   const [subSaving, setSubSaving] = useState(false);
   const [subDeletingId, setSubDeletingId] = useState(null);
   const [subPayingId, setSubPayingId] = useState(null);
+  const [pendingPaySub, setPendingPaySub] = useState(null); // subscription ที่รอยืนยัน "จ่ายแล้ว"
+  const [editingSub, setEditingSub] = useState(null); // subscription ที่กำลังแก้ไข หรือ null
+  const [editSubName, setEditSubName] = useState("");
+  const [editSubAmount, setEditSubAmount] = useState("");
+  const [editSubBillingType, setEditSubBillingType] = useState("monthly");
+  const [editSubCustomDays, setEditSubCustomDays] = useState("30");
+  const [editSubStartDate, setEditSubStartDate] = useState("");
+  const [editSubNextDueDate, setEditSubNextDueDate] = useState("");
+  const [editSubError, setEditSubError] = useState("");
+  const [editSubSaving, setEditSubSaving] = useState(false);
+
+  function openEditSub(sub) {
+    setEditingSub(sub);
+    setEditSubName(sub.name);
+    setEditSubAmount(String(sub.amount));
+    setEditSubBillingType(sub.billing_type);
+    setEditSubCustomDays(String(sub.custom_days || 30));
+    setEditSubStartDate(sub.start_date);
+    setEditSubNextDueDate(sub.next_due_date);
+    setEditSubError("");
+  }
+
+  function closeEditSub() {
+    setEditingSub(null);
+  }
+
+  async function saveEditSub() {
+    const amt = parseFloat(editSubAmount);
+    if (!editSubName.trim()) {
+      setEditSubError("กรอกชื่อ subscription");
+      return;
+    }
+    if (!amt || amt <= 0) {
+      setEditSubError("กรอกจำนวนเงินให้ถูกต้อง");
+      return;
+    }
+    if (!editSubNextDueDate) {
+      setEditSubError("กรอกวันครบกำหนดถัดไปให้ถูกต้อง");
+      return;
+    }
+    setEditSubError("");
+    setEditSubSaving(true);
+    const { data, error: updateError } = await supabase
+      .from("subscriptions")
+      .update({
+        name: editSubName.trim(),
+        amount: Math.round(amt * 100) / 100,
+        billing_type: editSubBillingType,
+        custom_days: editSubBillingType === "custom" ? parseInt(editSubCustomDays, 10) || 30 : null,
+        start_date: editSubStartDate,
+        next_due_date: editSubNextDueDate,
+      })
+      .eq("id", editingSub.id)
+      .select()
+      .single();
+    setEditSubSaving(false);
+    if (updateError) {
+      setEditSubError("บันทึกไม่สำเร็จ: " + updateError.message);
+      return;
+    }
+    setSubscriptions((prev) => prev.map((s) => (s.id === data.id ? data : s)).sort((a, b) => a.next_due_date.localeCompare(b.next_due_date)));
+    setEditingSub(null);
+  }
 
   async function loadSubscriptions() {
     const { data, error: fetchError } = await supabase
@@ -204,7 +272,18 @@ export default function ExpenseTracker({ session, onLogout }) {
     setSubName(""); setSubAmount(""); setSubCustomDays("30"); setSubBillingType("monthly"); setSubStartDate(todayStr());
   }
 
-  async function markSubscriptionPaid(sub) {
+  function requestPaySubscription(sub) {
+    setPendingPaySub(sub);
+  }
+
+  function cancelPaySubscription() {
+    setPendingPaySub(null);
+  }
+
+  async function confirmPaySubscription() {
+    const sub = pendingPaySub;
+    if (!sub) return;
+    setPendingPaySub(null);
     setSubPayingId(sub.id);
     const nextDue = addCycle(sub.next_due_date, sub.billing_type, sub.custom_days);
     const { data, error: updateError } = await supabase
@@ -664,14 +743,14 @@ export default function ExpenseTracker({ session, onLogout }) {
                   const dLeft = daysUntil(s.next_due_date);
                   const isDueToday = dLeft <= 0;
                   const isNear = dLeft > 0 && dLeft <= 3;
+                  const cycleLen = cycleLengthDays(s);
+                  const progressPct = Math.max(0, Math.min(100, ((cycleLen - dLeft) / cycleLen) * 100));
+                  const barColor = isDueToday ? "#b0413e" : isNear ? "#9c7a34" : "#7a9b7a";
                   return (
                     <div key={s.id} style={{ padding: "14px 16px", borderTop: i === 0 ? "none" : "1px dashed #e2d9c3", background: isDueToday ? "#fdecea" : isNear ? "#fdf6e3" : "transparent" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                        <div>
-                          <div style={{ fontSize: 14, fontWeight: 700 }}>{s.name}</div>
-                          <div style={{ fontSize: 12, color: isDueToday ? "#b0413e" : isNear ? "#9c7a34" : "#9a8f6f", fontWeight: isDueToday || isNear ? 700 : 400, marginTop: 2 }}>
-                            {isDueToday ? (dLeft === 0 ? `วันนี้ต้องจ่าย ฿${fmt(s.amount)}` : `เลยกำหนด ${Math.abs(dLeft)} วัน · ฿${fmt(s.amount)}`) : `อีก ${dLeft} วัน (${s.next_due_date})`}
-                          </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                        <div style={{ cursor: "pointer" }} onClick={() => openEditSub(s)}>
+                          <div style={{ fontSize: 14, fontWeight: 700, textDecoration: "underline", textDecorationColor: "#e2d9c3", textUnderlineOffset: 3 }}>{s.name}</div>
                           <div style={{ fontSize: 11, color: "#b0a688", marginTop: 2 }}>
                             {s.billing_type === "monthly" ? "รายเดือน" : s.billing_type === "yearly" ? "รายปี" : `ทุก ${s.custom_days} วัน`}
                           </div>
@@ -679,11 +758,18 @@ export default function ExpenseTracker({ session, onLogout }) {
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
                           <div style={{ fontSize: 15, fontWeight: 700 }}>{fmt(s.amount)} ฿</div>
                           <div style={{ display: "flex", gap: 6 }}>
-                            <button className="et-btn" onClick={() => markSubscriptionPaid(s)} disabled={subPayingId === s.id} style={{ fontSize: 11, padding: "4px 8px", borderRadius: 12, border: "1px solid #2f6e51", background: "transparent", color: "#2f6e51" }}>จ่ายแล้ว</button>
+                            <button className="et-btn" onClick={() => requestPaySubscription(s)} disabled={subPayingId === s.id} style={{ fontSize: 11, padding: "4px 8px", borderRadius: 12, border: "1px solid #2f6e51", background: "transparent", color: "#2f6e51" }}>จ่ายแล้ว</button>
                             <button className="et-btn" onClick={() => deleteSubscription(s.id)} disabled={subDeletingId === s.id} aria-label="ลบ" style={{ border: "none", background: "transparent", color: "#b0a688", fontSize: 16, padding: "0 4px" }}>×</button>
                           </div>
                         </div>
                       </div>
+                      <div style={{ fontSize: isDueToday ? 20 : 17, fontWeight: 700, color: isDueToday ? "#b0413e" : isNear ? "#9c7a34" : inkColor, marginBottom: 4 }}>
+                        {isDueToday ? (dLeft === 0 ? "วันนี้ต้องจ่าย!" : `เลยกำหนด ${Math.abs(dLeft)} วัน`) : `เหลืออีก ${dLeft} วัน`}
+                      </div>
+                      <div style={{ height: 8, background: "#efe9d8", borderRadius: 4, overflow: "hidden", marginBottom: 4 }}>
+                        <div style={{ height: "100%", width: `${progressPct}%`, background: barColor, borderRadius: 4, transition: "width 0.2s" }} />
+                      </div>
+                      <div style={{ fontSize: 11, color: "#9a8f6f" }}>ครบกำหนด: {s.next_due_date}</div>
                     </div>
                   );
                 })}
@@ -1050,6 +1136,61 @@ export default function ExpenseTracker({ session, onLogout }) {
               </button>
               <button className="et-btn" onClick={saveEdit} disabled={editSaving} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "none", background: gold, color: "#fff", fontWeight: 700, fontSize: 14, opacity: editSaving ? 0.6 : 1 }}>
                 {editSaving ? "กำลังบันทึก..." : "บันทึกการแก้ไข"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingPaySub && (
+        <div className="et-modal-overlay" onClick={cancelPaySubscription}>
+          <div className="et-modal-card" onClick={(ev) => ev.stopPropagation()}>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>ยืนยันจ่ายแล้ว</div>
+            <div style={{ fontSize: 14, color: "#5a5240", marginBottom: 4 }}>
+              ยืนยันว่าจ่าย <b>{pendingPaySub.name}</b> ({fmt(pendingPaySub.amount)} ฿) รอบนี้แล้ว?
+            </div>
+            <div style={{ background: paper, borderRadius: 8, padding: "10px 14px", margin: "14px 0", fontSize: 13 }}>
+              <div>ครบกำหนดเดิม: <b>{pendingPaySub.next_due_date}</b></div>
+              <div style={{ marginTop: 4 }}>จะเลื่อนเป็น: <b style={{ color: gold }}>{addCycle(pendingPaySub.next_due_date, pendingPaySub.billing_type, pendingPaySub.custom_days)}</b></div>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="et-btn" onClick={cancelPaySubscription} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: "transparent", color: inkColor, fontWeight: 700, fontSize: 14 }}>
+                ยกเลิก
+              </button>
+              <button className="et-btn" onClick={confirmPaySubscription} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "none", background: "#2f6e51", color: "#fff", fontWeight: 700, fontSize: 14 }}>
+                ยืนยันจ่ายแล้ว
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingSub && (
+        <div className="et-modal-overlay" onClick={closeEditSub}>
+          <div className="et-modal-card" onClick={(ev) => ev.stopPropagation()}>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 12 }}>แก้ไข Subscription</div>
+            <input className="et-input" type="text" placeholder="ชื่อ" value={editSubName} onChange={(e) => setEditSubName(e.target.value)} style={{ marginBottom: 10 }} />
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <input className="et-input" type="number" placeholder="จำนวนเงิน" value={editSubAmount} onChange={(e) => setEditSubAmount(e.target.value)} />
+              <input className="et-input" type="date" value={editSubStartDate} onChange={(e) => setEditSubStartDate(e.target.value)} style={{ maxWidth: 150 }} />
+            </div>
+            <select className="et-select" value={editSubBillingType} onChange={(e) => setEditSubBillingType(e.target.value)} style={{ marginBottom: 10 }}>
+              <option value="monthly">รายเดือน</option>
+              <option value="yearly">รายปี</option>
+              <option value="custom">กำหนดวันเอง</option>
+            </select>
+            {editSubBillingType === "custom" && (
+              <input className="et-input" type="number" placeholder="จำนวนวันต่อรอบ" value={editSubCustomDays} onChange={(e) => setEditSubCustomDays(e.target.value)} style={{ marginBottom: 10 }} />
+            )}
+            <label style={{ fontSize: 12, color: "#9a8f6f", display: "block", marginBottom: 4 }}>วันครบกำหนดถัดไป (แก้ตรงนี้ได้ถ้าเลื่อนผิด)</label>
+            <input className="et-input" type="date" value={editSubNextDueDate} onChange={(e) => setEditSubNextDueDate(e.target.value)} style={{ marginBottom: 12 }} />
+            {editSubError && <div style={{ color: "#b0413e", fontSize: 13, marginBottom: 8 }}>{editSubError}</div>}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="et-btn" onClick={closeEditSub} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: "transparent", color: inkColor, fontWeight: 700, fontSize: 14 }}>
+                ยกเลิก
+              </button>
+              <button className="et-btn" onClick={saveEditSub} disabled={editSubSaving} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "none", background: gold, color: "#fff", fontWeight: 700, fontSize: 14, opacity: editSubSaving ? 0.6 : 1 }}>
+                {editSubSaving ? "กำลังบันทึก..." : "บันทึกการแก้ไข"}
               </button>
             </div>
           </div>
