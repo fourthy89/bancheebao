@@ -159,6 +159,7 @@ export default function ExpenseTracker({ session, onLogout }) {
   const [subBillingType, setSubBillingType] = useState("monthly"); // monthly | yearly | custom
   const [subCustomDays, setSubCustomDays] = useState("30");
   const [subStartDate, setSubStartDate] = useState(todayStr());
+  const [subIsTrial, setSubIsTrial] = useState(false);
   const [subError, setSubError] = useState("");
   const [subSaving, setSubSaving] = useState(false);
   const [subDeletingId, setSubDeletingId] = useState(null);
@@ -174,6 +175,7 @@ export default function ExpenseTracker({ session, onLogout }) {
   const [editSubNextDueDay, setEditSubNextDueDay] = useState(1); // วันในเดือน คงจากค่าที่มีอยู่เดิม ไม่ให้ผู้ใช้แก้ตรงนี้ กันสับสน
   const [editSubError, setEditSubError] = useState("");
   const [editSubSaving, setEditSubSaving] = useState(false);
+  const [editSubIsTrial, setEditSubIsTrial] = useState(false);
 
   function openEditSub(sub) {
     setEditingSub(sub);
@@ -184,6 +186,7 @@ export default function ExpenseTracker({ session, onLogout }) {
     setEditSubStartDate(sub.start_date);
     setEditSubNextDueMonth(sub.next_due_date.slice(0, 7));
     setEditSubNextDueDay(parseInt(sub.next_due_date.slice(8, 10), 10));
+    setEditSubIsTrial(!!sub.is_trial);
     setEditSubError("");
   }
 
@@ -217,6 +220,7 @@ export default function ExpenseTracker({ session, onLogout }) {
         custom_days: editSubBillingType === "custom" ? parseInt(editSubCustomDays, 10) || 30 : null,
         start_date: editSubStartDate,
         next_due_date: finalNextDue,
+        is_trial: editSubIsTrial,
       })
       .eq("id", editingSub.id)
       .select()
@@ -266,6 +270,7 @@ export default function ExpenseTracker({ session, onLogout }) {
       start_date: subStartDate,
       next_due_date: nextDue,
       is_active: true,
+      is_trial: subIsTrial,
     };
     const { data, error: insertError } = await supabase
       .from("subscriptions")
@@ -278,7 +283,7 @@ export default function ExpenseTracker({ session, onLogout }) {
       return;
     }
     setSubscriptions((prev) => [...prev, data].sort((a, b) => a.next_due_date.localeCompare(b.next_due_date)));
-    setSubName(""); setSubAmount(""); setSubCustomDays("30"); setSubBillingType("monthly"); setSubStartDate(todayStr());
+    setSubName(""); setSubAmount(""); setSubCustomDays("30"); setSubBillingType("monthly"); setSubStartDate(todayStr()); setSubIsTrial(false);
   }
 
   function requestPaySubscription(sub) {
@@ -297,7 +302,7 @@ export default function ExpenseTracker({ session, onLogout }) {
     const nextDue = addCycle(sub.next_due_date, sub.billing_type, sub.custom_days);
     const { data, error: updateError } = await supabase
       .from("subscriptions")
-      .update({ next_due_date: nextDue })
+      .update({ next_due_date: nextDue, is_trial: false })
       .eq("id", sub.id)
       .select()
       .single();
@@ -316,7 +321,7 @@ export default function ExpenseTracker({ session, onLogout }) {
     if (deleteError) setSubscriptions(prev);
   }
 
-  const subMonthlyTotal = useMemo(() => subscriptions.reduce((sum, s) => sum + monthlyEquivalent(s), 0), [subscriptions]);
+  const subMonthlyTotal = useMemo(() => subscriptions.filter((s) => !s.is_trial).reduce((sum, s) => sum + monthlyEquivalent(s), 0), [subscriptions]);
 
   function openEdit(entry) {
     setEditingEntry(entry);
@@ -736,6 +741,10 @@ export default function ExpenseTracker({ session, onLogout }) {
                 <input className="et-input" type="number" placeholder="จำนวนวันต่อรอบ เช่น 30" value={subCustomDays} onChange={(e) => setSubCustomDays(e.target.value)} style={{ marginBottom: 10 }} />
               )}
               {subError && <div style={{ color: "#b0413e", fontSize: 13, marginBottom: 8 }}>{subError}</div>}
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, fontSize: 13, cursor: "pointer" }}>
+                <input type="checkbox" checked={subIsTrial} onChange={(e) => setSubIsTrial(e.target.checked)} />
+                ทดลองใช้ฟรี (Free Trial) — ไม่นับรวมในยอดรวมต่อเดือน
+              </label>
               <button className="et-btn" onClick={addSubscription} disabled={subSaving} style={{ width: "100%", padding: "11px 0", borderRadius: 6, border: "none", background: gold, color: "#fff", fontWeight: 700, fontSize: 15, opacity: subSaving ? 0.6 : 1 }}>
                 {subSaving ? "กำลังบันทึก..." : "เพิ่ม Subscription"}
               </button>
@@ -759,7 +768,12 @@ export default function ExpenseTracker({ session, onLogout }) {
                     <div key={s.id} style={{ padding: "14px 16px", borderTop: i === 0 ? "none" : "1px dashed #e2d9c3", background: isDueToday ? "#fdecea" : isNear ? "#fdf6e3" : "transparent" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
                         <div style={{ cursor: "pointer" }} onClick={() => openEditSub(s)}>
-                          <div style={{ fontSize: 14, fontWeight: 700, textDecoration: "underline", textDecorationColor: "#e2d9c3", textUnderlineOffset: 3 }}>{s.name}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <div style={{ fontSize: 14, fontWeight: 700, textDecoration: "underline", textDecorationColor: "#e2d9c3", textUnderlineOffset: 3 }}>{s.name}</div>
+                            {s.is_trial && (
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 8, background: "#e8dfc8", color: "#9c7a34" }}>ทดลองฟรี</span>
+                            )}
+                          </div>
                           <div style={{ fontSize: 11, color: "#b0a688", marginTop: 2 }}>
                             {s.billing_type === "monthly" ? "รายเดือน" : s.billing_type === "yearly" ? "รายปี" : `ทุก ${s.custom_days} วัน`}
                           </div>
@@ -767,13 +781,15 @@ export default function ExpenseTracker({ session, onLogout }) {
                         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
                           <div style={{ fontSize: 15, fontWeight: 700 }}>{fmt(s.amount)} ฿</div>
                           <div style={{ display: "flex", gap: 6 }}>
-                            <button className="et-btn" onClick={() => requestPaySubscription(s)} disabled={subPayingId === s.id} style={{ fontSize: 11, padding: "4px 8px", borderRadius: 12, border: "1px solid #2f6e51", background: "transparent", color: "#2f6e51" }}>จ่ายแล้ว</button>
+                            <button className="et-btn" onClick={() => requestPaySubscription(s)} disabled={subPayingId === s.id} style={{ fontSize: 11, padding: "4px 8px", borderRadius: 12, border: "1px solid #2f6e51", background: "transparent", color: "#2f6e51" }}>{s.is_trial ? "ต่ออายุ" : "จ่ายแล้ว"}</button>
                             <button className="et-btn" onClick={() => deleteSubscription(s.id)} disabled={subDeletingId === s.id} aria-label="ลบ" style={{ border: "none", background: "transparent", color: "#b0a688", fontSize: 16, padding: "0 4px" }}>×</button>
                           </div>
                         </div>
                       </div>
                       <div style={{ fontSize: isDueToday ? 20 : 17, fontWeight: 700, color: isDueToday ? "#b0413e" : isNear ? "#9c7a34" : inkColor, marginBottom: 4 }}>
-                        {isDueToday ? (dLeft === 0 ? "วันนี้ต้องจ่าย!" : `เลยกำหนด ${Math.abs(dLeft)} วัน`) : `เหลืออีก ${dLeft} วัน`}
+                        {isDueToday
+                          ? (dLeft === 0 ? (s.is_trial ? "วันนี้ทดลองฟรีหมดอายุ!" : "วันนี้ต้องจ่าย!") : `เลยกำหนด ${Math.abs(dLeft)} วัน`)
+                          : `เหลืออีก ${dLeft} วัน${s.is_trial ? " (ทดลองฟรีจะหมดอายุ)" : ""}`}
                       </div>
                       <div style={{ height: 8, background: "#efe9d8", borderRadius: 4, overflow: "hidden", marginBottom: 4 }}>
                         <div style={{ height: "100%", width: `${progressPct}%`, background: barColor, borderRadius: 4, transition: "width 0.2s" }} />
@@ -1154,9 +1170,11 @@ export default function ExpenseTracker({ session, onLogout }) {
       {pendingPaySub && (
         <div className="et-modal-overlay" onClick={cancelPaySubscription}>
           <div className="et-modal-card" onClick={(ev) => ev.stopPropagation()}>
-            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>ยืนยันจ่ายแล้ว</div>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>{pendingPaySub.is_trial ? "ยืนยันต่ออายุ" : "ยืนยันจ่ายแล้ว"}</div>
             <div style={{ fontSize: 14, color: "#5a5240", marginBottom: 4 }}>
-              ยืนยันว่าจ่าย <b>{pendingPaySub.name}</b> ({fmt(pendingPaySub.amount)} ฿) รอบนี้แล้ว?
+              {pendingPaySub.is_trial
+                ? <>ยืนยันต่ออายุ <b>{pendingPaySub.name}</b> — จะเริ่มเสียเงินจริง {fmt(pendingPaySub.amount)} ฿ ตั้งแต่รอบนี้ (ปลดสถานะทดลองฟรีออกอัตโนมัติ)</>
+                : <>ยืนยันว่าจ่าย <b>{pendingPaySub.name}</b> ({fmt(pendingPaySub.amount)} ฿) รอบนี้แล้ว?</>}
             </div>
             <div style={{ background: paper, borderRadius: 8, padding: "10px 14px", margin: "14px 0", fontSize: 13 }}>
               <div>ครบกำหนดเดิม: <b>{pendingPaySub.next_due_date}</b></div>
@@ -1167,7 +1185,7 @@ export default function ExpenseTracker({ session, onLogout }) {
                 ยกเลิก
               </button>
               <button className="et-btn" onClick={confirmPaySubscription} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "none", background: "#2f6e51", color: "#fff", fontWeight: 700, fontSize: 14 }}>
-                ยืนยันจ่ายแล้ว
+                {pendingPaySub.is_trial ? "ยืนยันต่ออายุ" : "ยืนยันจ่ายแล้ว"}
               </button>
             </div>
           </div>
@@ -1199,6 +1217,10 @@ export default function ExpenseTracker({ session, onLogout }) {
               </div>
             )}
             {editSubError && <div style={{ color: "#b0413e", fontSize: 13, marginBottom: 8 }}>{editSubError}</div>}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, fontSize: 13, cursor: "pointer" }}>
+              <input type="checkbox" checked={editSubIsTrial} onChange={(e) => setEditSubIsTrial(e.target.checked)} />
+              ทดลองใช้ฟรี (Free Trial) — ไม่นับรวมในยอดรวมต่อเดือน
+            </label>
             <div style={{ display: "flex", gap: 10 }}>
               <button className="et-btn" onClick={closeEditSub} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: "transparent", color: inkColor, fontWeight: 700, fontSize: 14 }}>
                 ยกเลิก
