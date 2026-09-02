@@ -47,6 +47,12 @@ function cycleLengthDays(sub) {
   if (sub.billing_type === "yearly") return 365;
   return sub.custom_days || 30;
 }
+function combineMonthWithDay(monthStr, day) {
+  const [y, m] = monthStr.split("-").map(Number); // m = 1-12
+  const lastDay = new Date(y, m, 0).getDate(); // วันสุดท้ายของเดือน m (Date เดือน 1-index ตรงนี้เพราะใช้ 0 = วันสุดท้ายเดือนก่อนหน้า)
+  const d = Math.min(day, lastDay);
+  return toISODate(y, m - 1, d);
+}
 function buildMonthGrid(year, month) {
   const firstDay = new Date(year, month, 1);
   const startWeekday = firstDay.getDay();
@@ -164,7 +170,8 @@ export default function ExpenseTracker({ session, onLogout }) {
   const [editSubBillingType, setEditSubBillingType] = useState("monthly");
   const [editSubCustomDays, setEditSubCustomDays] = useState("30");
   const [editSubStartDate, setEditSubStartDate] = useState("");
-  const [editSubNextDueDate, setEditSubNextDueDate] = useState("");
+  const [editSubNextDueMonth, setEditSubNextDueMonth] = useState(""); // "YYYY-MM"
+  const [editSubNextDueDay, setEditSubNextDueDay] = useState(1); // วันในเดือน คงจากค่าที่มีอยู่เดิม ไม่ให้ผู้ใช้แก้ตรงนี้ กันสับสน
   const [editSubError, setEditSubError] = useState("");
   const [editSubSaving, setEditSubSaving] = useState(false);
 
@@ -175,7 +182,8 @@ export default function ExpenseTracker({ session, onLogout }) {
     setEditSubBillingType(sub.billing_type);
     setEditSubCustomDays(String(sub.custom_days || 30));
     setEditSubStartDate(sub.start_date);
-    setEditSubNextDueDate(sub.next_due_date);
+    setEditSubNextDueMonth(sub.next_due_date.slice(0, 7));
+    setEditSubNextDueDay(parseInt(sub.next_due_date.slice(8, 10), 10));
     setEditSubError("");
   }
 
@@ -193,12 +201,13 @@ export default function ExpenseTracker({ session, onLogout }) {
       setEditSubError("กรอกจำนวนเงินให้ถูกต้อง");
       return;
     }
-    if (!editSubNextDueDate) {
-      setEditSubError("กรอกวันครบกำหนดถัดไปให้ถูกต้อง");
+    if (!editSubNextDueMonth) {
+      setEditSubError("เลือกเดือนครบกำหนดให้ถูกต้อง");
       return;
     }
     setEditSubError("");
     setEditSubSaving(true);
+    const finalNextDue = combineMonthWithDay(editSubNextDueMonth, editSubNextDueDay);
     const { data, error: updateError } = await supabase
       .from("subscriptions")
       .update({
@@ -207,7 +216,7 @@ export default function ExpenseTracker({ session, onLogout }) {
         billing_type: editSubBillingType,
         custom_days: editSubBillingType === "custom" ? parseInt(editSubCustomDays, 10) || 30 : null,
         start_date: editSubStartDate,
-        next_due_date: editSubNextDueDate,
+        next_due_date: finalNextDue,
       })
       .eq("id", editingSub.id)
       .select()
@@ -1182,8 +1191,13 @@ export default function ExpenseTracker({ session, onLogout }) {
             {editSubBillingType === "custom" && (
               <input className="et-input" type="number" placeholder="จำนวนวันต่อรอบ" value={editSubCustomDays} onChange={(e) => setEditSubCustomDays(e.target.value)} style={{ marginBottom: 10 }} />
             )}
-            <label style={{ fontSize: 12, color: "#9a8f6f", display: "block", marginBottom: 4 }}>วันครบกำหนดถัดไป (แก้ตรงนี้ได้ถ้าเลื่อนผิด)</label>
-            <input className="et-input" type="date" value={editSubNextDueDate} onChange={(e) => setEditSubNextDueDate(e.target.value)} style={{ marginBottom: 12 }} />
+            <label style={{ fontSize: 12, color: "#9a8f6f", display: "block", marginBottom: 4 }}>ครบกำหนดเดือนไหน (แก้ตรงนี้ได้ถ้าเลื่อนผิด — วันที่ตัดยังคงเดิม)</label>
+            <input className="et-input" type="month" value={editSubNextDueMonth} onChange={(e) => setEditSubNextDueMonth(e.target.value)} style={{ marginBottom: 6 }} />
+            {editSubNextDueMonth && (
+              <div style={{ fontSize: 12, color: "#9a8f6f", marginBottom: 12 }}>
+                = วันที่ {combineMonthWithDay(editSubNextDueMonth, editSubNextDueDay)}
+              </div>
+            )}
             {editSubError && <div style={{ color: "#b0413e", fontSize: 13, marginBottom: 8 }}>{editSubError}</div>}
             <div style={{ display: "flex", gap: 10 }}>
               <button className="et-btn" onClick={closeEditSub} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: "transparent", color: inkColor, fontWeight: 700, fontSize: 14 }}>
