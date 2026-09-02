@@ -25,6 +25,23 @@ function pad2(n) {
 function toISODate(year, month, day) {
   return `${year}-${pad2(month + 1)}-${pad2(day)}`;
 }
+function addCycle(dateStr, billingType, customDays) {
+  const d = new Date(dateStr + "T00:00:00");
+  if (billingType === "monthly") d.setMonth(d.getMonth() + 1);
+  else if (billingType === "yearly") d.setFullYear(d.getFullYear() + 1);
+  else d.setDate(d.getDate() + (parseInt(customDays, 10) || 30));
+  return toISODate(d.getFullYear(), d.getMonth(), d.getDate());
+}
+function daysUntil(dateStr) {
+  const today = new Date(todayStr() + "T00:00:00");
+  const target = new Date(dateStr + "T00:00:00");
+  return Math.round((target - today) / 86400000);
+}
+function monthlyEquivalent(sub) {
+  if (sub.billing_type === "monthly") return sub.amount;
+  if (sub.billing_type === "yearly") return sub.amount / 12;
+  return sub.amount * (30 / (sub.custom_days || 30));
+}
 function buildMonthGrid(year, month) {
   const firstDay = new Date(year, month, 1);
   const startWeekday = firstDay.getDay();
@@ -107,6 +124,111 @@ export default function ExpenseTracker({ session, onLogout }) {
   const [editDate, setEditDate] = useState("");
   const [editError, setEditError] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+
+  // --- ระบบแท็บ (มือถือ: แถบเมนูล่าง / เดสก์ทอป: ปุ่มบนแถบเดิม) ---
+  const [activeTab, setActiveTab] = useState(() => loadUiState().activeTab || "home"); // "home" | "subscription" | "more"
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 799px)").matches);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 799px)");
+    const handler = (e) => setIsMobile(e.matches);
+    if (mq.addEventListener) mq.addEventListener("change", handler);
+    else mq.addListener(handler);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", handler);
+      else mq.removeListener(handler);
+    };
+  }, []);
+
+  // --- Subscription ---
+  const [subscriptions, setSubscriptions] = useState([]);
+  const [subsLoaded, setSubsLoaded] = useState(false);
+  const [subName, setSubName] = useState("");
+  const [subAmount, setSubAmount] = useState("");
+  const [subBillingType, setSubBillingType] = useState("monthly"); // monthly | yearly | custom
+  const [subCustomDays, setSubCustomDays] = useState("30");
+  const [subStartDate, setSubStartDate] = useState(todayStr());
+  const [subError, setSubError] = useState("");
+  const [subSaving, setSubSaving] = useState(false);
+  const [subDeletingId, setSubDeletingId] = useState(null);
+  const [subPayingId, setSubPayingId] = useState(null);
+
+  async function loadSubscriptions() {
+    const { data, error: fetchError } = await supabase
+      .from("subscriptions")
+      .select("*")
+      .eq("is_active", true)
+      .order("next_due_date", { ascending: true });
+    if (!fetchError) setSubscriptions(data || []);
+    setSubsLoaded(true);
+  }
+
+  useEffect(() => {
+    loadSubscriptions();
+  }, []);
+
+  async function addSubscription() {
+    const amt = parseFloat(subAmount);
+    if (!subName.trim()) {
+      setSubError("กรอกชื่อ subscription");
+      return;
+    }
+    if (!amt || amt <= 0) {
+      setSubError("กรอกจำนวนเงินให้ถูกต้อง");
+      return;
+    }
+    setSubError("");
+    setSubSaving(true);
+    const nextDue = addCycle(subStartDate, subBillingType, subCustomDays);
+    const newSub = {
+      user_id: session.user.id,
+      name: subName.trim(),
+      amount: Math.round(amt * 100) / 100,
+      billing_type: subBillingType,
+      custom_days: subBillingType === "custom" ? parseInt(subCustomDays, 10) || 30 : null,
+      start_date: subStartDate,
+      next_due_date: nextDue,
+      is_active: true,
+    };
+    const { data, error: insertError } = await supabase
+      .from("subscriptions")
+      .insert(newSub)
+      .select()
+      .single();
+    setSubSaving(false);
+    if (insertError) {
+      setSubError("บันทึกไม่สำเร็จ: " + insertError.message);
+      return;
+    }
+    setSubscriptions((prev) => [...prev, data].sort((a, b) => a.next_due_date.localeCompare(b.next_due_date)));
+    setSubName(""); setSubAmount(""); setSubCustomDays("30"); setSubBillingType("monthly"); setSubStartDate(todayStr());
+  }
+
+  async function markSubscriptionPaid(sub) {
+    setSubPayingId(sub.id);
+    const nextDue = addCycle(sub.next_due_date, sub.billing_type, sub.custom_days);
+    const { data, error: updateError } = await supabase
+      .from("subscriptions")
+      .update({ next_due_date: nextDue })
+      .eq("id", sub.id)
+      .select()
+      .single();
+    setSubPayingId(null);
+    if (!updateError) {
+      setSubscriptions((prev) => prev.map((s) => (s.id === sub.id ? data : s)).sort((a, b) => a.next_due_date.localeCompare(b.next_due_date)));
+    }
+  }
+
+  async function deleteSubscription(id) {
+    setSubDeletingId(id);
+    const prev = subscriptions;
+    setSubscriptions((p) => p.filter((s) => s.id !== id));
+    const { error: deleteError } = await supabase.from("subscriptions").delete().eq("id", id);
+    setSubDeletingId(null);
+    if (deleteError) setSubscriptions(prev);
+  }
+
+  const subMonthlyTotal = useMemo(() => subscriptions.reduce((sum, s) => sum + monthlyEquivalent(s), 0), [subscriptions]);
 
   function openEdit(entry) {
     setEditingEntry(entry);
@@ -220,8 +342,8 @@ export default function ExpenseTracker({ session, onLogout }) {
   }, [groupMode]);
 
   useEffect(() => {
-    saveUiState({ type, filter, groupMode, selectedPeriod, quickRange, customRange, catView, catCollapsed, categoryFilter, viewMode: isAdmin ? viewMode : "user" });
-  }, [type, filter, groupMode, selectedPeriod, quickRange, customRange, catView, catCollapsed, categoryFilter, viewMode, isAdmin]);
+    saveUiState({ type, filter, groupMode, selectedPeriod, quickRange, customRange, catView, catCollapsed, categoryFilter, activeTab, viewMode: isAdmin ? viewMode : "user" });
+  }, [type, filter, groupMode, selectedPeriod, quickRange, customRange, catView, catCollapsed, categoryFilter, activeTab, viewMode, isAdmin]);
 
   useEffect(() => {
     if (isAdmin && viewMode === "admin") {
@@ -406,14 +528,33 @@ export default function ExpenseTracker({ session, onLogout }) {
         .et-input { width: 100%; padding: 10px 11px; border-radius: 6px; border: 1px solid #cbbf9e; font-family: inherit; box-sizing: border-box; font-size: 15px; }
         .et-select { width: 100%; padding: 10px 32px 10px 11px; border-radius: 6px; border: 1px solid #cbbf9e; font-family: inherit; box-sizing: border-box; font-size: 15px; appearance: none; background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2320304a' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") no-repeat right 11px center; }
         .et-btn { cursor: pointer; font-family: inherit; }
+        .et-bottomnav { display: none; }
+        @media (max-width: 799px) {
+          .et-bottomnav {
+            display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 900;
+            background: #fff; border-top: 1px solid #e2d9c3; padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+            box-shadow: 0 -2px 10px rgba(32,48,74,0.08);
+          }
+          .et-wrap { padding-bottom: 64px; }
+        }
+        .et-navbtn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; border: none; background: transparent; font-family: inherit; font-size: 11px; }
         .et-modal-overlay { position: fixed; inset: 0; background: rgba(32,48,74,0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; box-sizing: border-box; animation: et-fade-in 0.15s ease-out; }
         .et-modal-card { background: #fff; border-radius: 12px; max-width: 360px; width: 100%; padding: 24px; box-sizing: border-box; box-shadow: 0 12px 32px rgba(32,48,74,0.25); animation: et-pop-in 0.18s ease-out; }
         @keyframes et-fade-in { from { opacity: 0; } to { opacity: 1; } }
         @keyframes et-pop-in { from { opacity: 0; transform: scale(0.96) translateY(4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
       `}</style>
       <div className="et-wrap">
-        {session && (
+        {session && !isMobile && (
           <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 12, marginBottom: 8, fontSize: 13 }}>
+            {viewMode !== "admin" && (
+              <button
+                className="et-btn"
+                onClick={() => setActiveTab(activeTab === "subscription" ? "home" : "subscription")}
+                style={{ border: "1px solid #9c7a34", background: activeTab === "subscription" ? "#9c7a34" : "#fff", color: activeTab === "subscription" ? "#fff" : "#9c7a34", borderRadius: 6, padding: "5px 12px", fontSize: 13, fontWeight: 700 }}
+              >
+                {activeTab === "subscription" ? "กลับหน้าหลัก" : "Subscription"}
+              </button>
+            )}
             {isAdmin && (
               <button
                 className="et-btn"
@@ -435,8 +576,9 @@ export default function ExpenseTracker({ session, onLogout }) {
         )}
         <div style={{ textAlign: "center", marginBottom: 20 }}>
           <div style={{ fontSize: 12, letterSpacing: 3, color: gold, marginBottom: 4 }}>BANCHEEBAO · สมุดบัญชี</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>{viewMode === "admin" ? "มุมมองแอดมิน · ทุกรายการ" : "บัญชีรายรับรายจ่าย"}</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{viewMode === "admin" ? "มุมมองแอดมิน · ทุกรายการ" : activeTab === "subscription" ? "Subscription" : activeTab === "more" ? "เพิ่มเติม" : "บัญชีรายรับรายจ่าย"}</div>
         </div>
+
 
         {viewMode === "admin" ? (
           <div>
@@ -477,6 +619,86 @@ export default function ExpenseTracker({ session, onLogout }) {
                 </div>
               </div>
             ))}
+          </div>
+        ) : activeTab === "subscription" ? (
+          <div>
+            <div style={{ background: inkColor, color: paper, borderRadius: 10, padding: "18px 20px", marginBottom: 16 }}>
+              <div style={{ fontSize: 11, opacity: 0.7 }}>ยอดรวมต่อเดือน (โดยประมาณ)</div>
+              <div style={{ fontSize: 24, color: gold }}>{fmt(subMonthlyTotal)} ฿ / เดือน</div>
+              <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>แยกเป็นอิสระ ไม่นับรวมกับยอดรายจ่ายจริง จนกว่าจะกด "จ่ายแล้ว"</div>
+            </div>
+
+            <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, padding: 16, marginBottom: 16 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>เพิ่ม Subscription</div>
+              <input className="et-input" type="text" placeholder="ชื่อ เช่น Netflix" value={subName} onChange={(e) => setSubName(e.target.value)} style={{ marginBottom: 10 }} />
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                <input className="et-input" type="number" placeholder="จำนวนเงิน" value={subAmount} onChange={(e) => setSubAmount(e.target.value)} />
+                <input className="et-input" type="date" value={subStartDate} onChange={(e) => setSubStartDate(e.target.value)} style={{ maxWidth: 150 }} />
+              </div>
+              <select className="et-select" value={subBillingType} onChange={(e) => setSubBillingType(e.target.value)} style={{ marginBottom: 10 }}>
+                <option value="monthly">รายเดือน</option>
+                <option value="yearly">รายปี</option>
+                <option value="custom">กำหนดวันเอง</option>
+              </select>
+              {subBillingType === "custom" && (
+                <input className="et-input" type="number" placeholder="จำนวนวันต่อรอบ เช่น 30" value={subCustomDays} onChange={(e) => setSubCustomDays(e.target.value)} style={{ marginBottom: 10 }} />
+              )}
+              {subError && <div style={{ color: "#b0413e", fontSize: 13, marginBottom: 8 }}>{subError}</div>}
+              <button className="et-btn" onClick={addSubscription} disabled={subSaving} style={{ width: "100%", padding: "11px 0", borderRadius: 6, border: "none", background: gold, color: "#fff", fontWeight: 700, fontSize: 15, opacity: subSaving ? 0.6 : 1 }}>
+                {subSaving ? "กำลังบันทึก..." : "เพิ่ม Subscription"}
+              </button>
+            </div>
+
+            {subsLoaded && subscriptions.length === 0 && (
+              <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, padding: 24, textAlign: "center", color: "#9a8f6f", fontSize: 14 }}>
+                ยังไม่มี subscription เริ่มเพิ่มรายการแรกได้เลย
+              </div>
+            )}
+            {subscriptions.length > 0 && (
+              <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, overflow: "hidden" }}>
+                {subscriptions.map((s, i) => {
+                  const dLeft = daysUntil(s.next_due_date);
+                  const isDueToday = dLeft <= 0;
+                  const isNear = dLeft > 0 && dLeft <= 3;
+                  return (
+                    <div key={s.id} style={{ padding: "14px 16px", borderTop: i === 0 ? "none" : "1px dashed #e2d9c3", background: isDueToday ? "#fdecea" : isNear ? "#fdf6e3" : "transparent" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 700 }}>{s.name}</div>
+                          <div style={{ fontSize: 12, color: isDueToday ? "#b0413e" : isNear ? "#9c7a34" : "#9a8f6f", fontWeight: isDueToday || isNear ? 700 : 400, marginTop: 2 }}>
+                            {isDueToday ? (dLeft === 0 ? `วันนี้ต้องจ่าย ฿${fmt(s.amount)}` : `เลยกำหนด ${Math.abs(dLeft)} วัน · ฿${fmt(s.amount)}`) : `อีก ${dLeft} วัน (${s.next_due_date})`}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#b0a688", marginTop: 2 }}>
+                            {s.billing_type === "monthly" ? "รายเดือน" : s.billing_type === "yearly" ? "รายปี" : `ทุก ${s.custom_days} วัน`}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+                          <div style={{ fontSize: 15, fontWeight: 700 }}>{fmt(s.amount)} ฿</div>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button className="et-btn" onClick={() => markSubscriptionPaid(s)} disabled={subPayingId === s.id} style={{ fontSize: 11, padding: "4px 8px", borderRadius: 12, border: "1px solid #2f6e51", background: "transparent", color: "#2f6e51" }}>จ่ายแล้ว</button>
+                            <button className="et-btn" onClick={() => deleteSubscription(s.id)} disabled={subDeletingId === s.id} aria-label="ลบ" style={{ border: "none", background: "transparent", color: "#b0a688", fontSize: 16, padding: "0 4px" }}>×</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : activeTab === "more" ? (
+          <div style={{ background: "#fff", border: "1px solid #e2d9c3", borderRadius: 10, overflow: "hidden" }}>
+            <div style={{ padding: "14px 16px", borderBottom: "1px dashed #e2d9c3", fontSize: 14, color: "#5a5240" }}>
+              บัญชี: {session.user?.email}
+            </div>
+            {isAdmin && (
+              <button className="et-btn" onClick={() => { openAdminView(); }} style={{ width: "100%", textAlign: "left", padding: "14px 16px", borderBottom: "1px dashed #e2d9c3", border: "none", background: "transparent", fontSize: 14, color: inkColor, fontWeight: 700 }}>
+                มุมมองแอดมิน
+              </button>
+            )}
+            <button className="et-btn" onClick={onLogout} style={{ width: "100%", textAlign: "left", padding: "14px 16px", border: "none", background: "transparent", fontSize: 14, color: "#b0413e", fontWeight: 700 }}>
+              ออกจากระบบ
+            </button>
           </div>
         ) : (
         <>
@@ -755,6 +977,23 @@ export default function ExpenseTracker({ session, onLogout }) {
         </>
         )}
       </div>
+
+      {session && isMobile && viewMode !== "admin" && (
+        <div className="et-bottomnav">
+          <button className="et-navbtn" onClick={() => setActiveTab("home")} style={{ color: activeTab === "home" ? gold : "#9a8f6f", fontWeight: activeTab === "home" ? 700 : 400 }}>
+            <span style={{ fontSize: 18 }}>🏠</span>
+            หน้าหลัก
+          </button>
+          <button className="et-navbtn" onClick={() => setActiveTab("subscription")} style={{ color: activeTab === "subscription" ? gold : "#9a8f6f", fontWeight: activeTab === "subscription" ? 700 : 400 }}>
+            <span style={{ fontSize: 18 }}>🔁</span>
+            Subscription
+          </button>
+          <button className="et-navbtn" onClick={() => setActiveTab("more")} style={{ color: activeTab === "more" ? gold : "#9a8f6f", fontWeight: activeTab === "more" ? 700 : 400 }}>
+            <span style={{ fontSize: 18 }}>⋯</span>
+            เพิ่มเติม
+          </button>
+        </div>
+      )}
 
       {pendingEntry && (
         <div className="et-modal-overlay" onClick={cancelDelete}>
