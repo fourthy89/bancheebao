@@ -312,11 +312,24 @@ export default function ExpenseTracker({ session, onLogout }) {
     }
   }
 
-  async function deleteSubscription(id) {
-    setSubDeletingId(id);
+  const [pendingDeleteSub, setPendingDeleteSub] = useState(null); // subscription ที่รอยืนยันลบ
+
+  function requestDeleteSub(sub) {
+    setPendingDeleteSub(sub);
+  }
+
+  function cancelDeleteSub() {
+    setPendingDeleteSub(null);
+  }
+
+  async function confirmDeleteSub() {
+    const sub = pendingDeleteSub;
+    if (!sub) return;
+    setPendingDeleteSub(null);
+    setSubDeletingId(sub.id);
     const prev = subscriptions;
-    setSubscriptions((p) => p.filter((s) => s.id !== id));
-    const { error: deleteError } = await supabase.from("subscriptions").delete().eq("id", id);
+    setSubscriptions((p) => p.filter((s) => s.id !== sub.id));
+    const { error: deleteError } = await supabase.from("subscriptions").delete().eq("id", sub.id);
     setSubDeletingId(null);
     if (deleteError) setSubscriptions(prev);
   }
@@ -782,7 +795,7 @@ export default function ExpenseTracker({ session, onLogout }) {
                           <div style={{ fontSize: 15, fontWeight: 700 }}>{fmt(s.amount)} ฿</div>
                           <div style={{ display: "flex", gap: 6 }}>
                             <button className="et-btn" onClick={() => requestPaySubscription(s)} disabled={subPayingId === s.id} style={{ fontSize: 11, padding: "4px 8px", borderRadius: 12, border: "1px solid #2f6e51", background: "transparent", color: "#2f6e51" }}>{s.is_trial ? "ต่ออายุ" : "จ่ายแล้ว"}</button>
-                            <button className="et-btn" onClick={() => deleteSubscription(s.id)} disabled={subDeletingId === s.id} aria-label="ลบ" style={{ border: "none", background: "transparent", color: "#b0a688", fontSize: 16, padding: "0 4px" }}>×</button>
+                            <button className="et-btn" onClick={() => requestDeleteSub(s)} disabled={subDeletingId === s.id} aria-label="ลบ" style={{ border: "none", background: "transparent", color: "#b0a688", fontSize: 16, padding: "0 4px" }}>×</button>
                           </div>
                         </div>
                       </div>
@@ -1227,6 +1240,25 @@ export default function ExpenseTracker({ session, onLogout }) {
               </button>
               <button className="et-btn" onClick={saveEditSub} disabled={editSubSaving} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "none", background: gold, color: "#fff", fontWeight: 700, fontSize: 14, opacity: editSubSaving ? 0.6 : 1 }}>
                 {editSubSaving ? "กำลังบันทึก..." : "บันทึกการแก้ไข"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingDeleteSub && (
+        <div className="et-modal-overlay" onClick={cancelDeleteSub}>
+          <div className="et-modal-card" onClick={(ev) => ev.stopPropagation()}>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>ยืนยันลบ Subscription</div>
+            <div style={{ fontSize: 14, color: "#5a5240", marginBottom: 16 }}>
+              ลบ <b>{pendingDeleteSub.name}</b> ({fmt(pendingDeleteSub.amount)} ฿) ออกจากรายการ? การลบนี้ย้อนกลับไม่ได้
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="et-btn" onClick={cancelDeleteSub} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "1px solid #cbbf9e", background: "transparent", color: inkColor, fontWeight: 700, fontSize: 14 }}>
+                ยกเลิก
+              </button>
+              <button className="et-btn" onClick={confirmDeleteSub} style={{ flex: 1, padding: "10px 0", borderRadius: 6, border: "none", background: "#b0413e", color: "#fff", fontWeight: 700, fontSize: 14 }}>
+                ลบเลย
               </button>
             </div>
           </div>
